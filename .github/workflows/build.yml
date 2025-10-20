@@ -1,0 +1,96 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+    branches:
+      - master
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build MCP Extension
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        configuration: [Debug, Release]
+
+    steps:
+      - name: Checkout MCP Extension
+        uses: actions/checkout@v4
+        with:
+          path: dnSpy.Extension.MCP
+
+      - name: Checkout dnSpy (parent repository)
+        uses: actions/checkout@v4
+        with:
+          repository: dnSpyEx/dnSpy
+          path: dnSpy
+          submodules: true
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            6.0.x
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Move extension to correct location
+        shell: pwsh
+        run: |
+          Move-Item -Path dnSpy.Extension.MCP -Destination dnSpy\Extensions\dnSpy.Extension.MCP -Force
+
+      - name: Restore dnSpy dependencies
+        shell: pwsh
+        run: |
+          cd dnSpy
+          dotnet restore dnSpy.sln
+
+      - name: Build extension (net48)
+        shell: pwsh
+        run: |
+          cd dnSpy\Extensions\dnSpy.Extension.MCP
+          dotnet build -c ${{ matrix.configuration }} -f net48
+
+      - name: Build extension (net8.0-windows)
+        shell: pwsh
+        run: |
+          cd dnSpy\Extensions\dnSpy.Extension.MCP
+          dotnet build -c ${{ matrix.configuration }} -f net8.0-windows
+
+      - name: Upload net48 artifact
+        if: matrix.configuration == 'Release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dnSpy.Extension.MCP-net48
+          path: dnSpy/Extensions/dnSpy.Extension.MCP/bin/Release/net48/dnSpy.Extension.MCP.x.dll
+          if-no-files-found: error
+
+      - name: Upload net8.0 artifact
+        if: matrix.configuration == 'Release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dnSpy.Extension.MCP-net8.0
+          path: dnSpy/Extensions/dnSpy.Extension.MCP/bin/Release/net8.0-windows/dnSpy.Extension.MCP.x.dll
+          if-no-files-found: error
+
+  build-status:
+    name: Build Status
+    needs: build
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check build result
+        run: |
+          if [ "${{ needs.build.result }}" != "success" ]; then
+            echo "Build failed!"
+            exit 1
+          fi
+          echo "All builds completed successfully!"

@@ -1,0 +1,153 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag (e.g., v1.0.0)"
+        required: true
+        type: string
+
+jobs:
+  build-release:
+    name: Build Release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout MCP Extension
+        uses: actions/checkout@v4
+        with:
+          path: dnSpy.Extension.MCP
+
+      - name: Checkout dnSpy (parent repository)
+        uses: actions/checkout@v4
+        with:
+          repository: dnSpyEx/dnSpy
+          path: dnSpy
+          submodules: true
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            6.0.x
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Move extension to correct location
+        shell: pwsh
+        run: |
+          Move-Item -Path dnSpy.Extension.MCP -Destination dnSpy\Extensions\dnSpy.Extension.MCP -Force
+
+      - name: Restore dnSpy dependencies
+        shell: pwsh
+        run: |
+          cd dnSpy
+          dotnet restore dnSpy.sln
+
+      - name: Build extension (net48)
+        shell: pwsh
+        run: |
+          cd dnSpy\Extensions\dnSpy.Extension.MCP
+          dotnet build -c Release -f net48
+
+      - name: Build extension (net8.0-windows)
+        shell: pwsh
+        run: |
+          cd dnSpy\Extensions\dnSpy.Extension.MCP
+          dotnet build -c Release -f net8.0-windows
+
+      - name: Prepare release files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release -Force
+
+          # Copy net48 DLL
+          Copy-Item -Path dnSpy\Extensions\dnSpy.Extension.MCP\bin\Release\net48\dnSpy.Extension.MCP.x.dll `
+                    -Destination release\dnSpy.Extension.MCP-net48.dll
+
+          # Copy net8.0 DLL
+          Copy-Item -Path dnSpy\Extensions\dnSpy.Extension.MCP\bin\Release\net8.0-windows\dnSpy.Extension.MCP.x.dll `
+                    -Destination release\dnSpy.Extension.MCP-net8.0.dll
+
+          # Create README
+          @"
+          # dnSpy MCP Extension
+
+          Model Context Protocol (MCP) extension for dnSpyEx that exposes assembly analysis tools to AI assistants.
+
+          ## Installation
+
+          1. Download the appropriate DLL for your dnSpyEx version:
+             - **net48**: For dnSpyEx .NET Framework 4.8 version
+             - **net8.0**: For dnSpyEx .NET 8.0 version
+
+          2. Rename the downloaded file to ``dnSpy.Extension.MCP.x.dll``
+
+          3. Copy to your dnSpyEx extensions folder:
+             - Windows: ``<dnSpy-Path>\bin\Extensions\dnSpy.Extension.MCP\``
+
+          4. Restart dnSpyEx
+
+          ## Features
+
+          - **10 MCP Tools** for assembly analysis (list assemblies, get type info, decompile methods, etc.)
+          - **6 MCP Resources** with comprehensive BepInEx plugin development documentation
+          - HTTP server on port 3000 (configurable)
+          - JSON-RPC 2.0 protocol support
+
+          ## Configuration
+
+          Settings can be configured in dnSpyEx:
+          - Edit > Settings > MCP Server
+          - Enable/disable server
+          - Change port number
+
+          ## Documentation
+
+          For more information, visit the [repository](https://github.com/KernelErr/dnSpy.Extension.MCP)
+          "@ | Out-File -FilePath release\README.md -Encoding UTF8
+
+          # Display built files
+          Write-Host "Release files:"
+          Get-ChildItem release | Format-Table Name, Length
+
+      - name: Create release archive
+        shell: pwsh
+        run: |
+          Compress-Archive -Path release\* -DestinationPath dnSpy.Extension.MCP-release.zip
+
+      - name: Get tag name
+        id: get_tag
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ inputs.tag_name }}"
+          } else {
+            $tag = "${{ github.ref }}".Replace("refs/tags/", "")
+          }
+          echo "tag=$tag" >> $env:GITHUB_OUTPUT
+          echo "Release tag: $tag"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.get_tag.outputs.tag }}
+          name: Release ${{ steps.get_tag.outputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dnSpy.Extension.MCP-release.zip
+            release/dnSpy.Extension.MCP-net48.dll
+            release/dnSpy.Extension.MCP-net8.0.dll
+            release/README.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
