@@ -30,7 +30,7 @@ namespace dnSpy.Extension.MCP {
 	/// Settings page for the MCP server in dnSpy settings dialog.
 	/// </summary>
 	sealed class McpAppSettingsPage : AppSettingsPage {
-		static readonly Guid THE_GUID = new Guid("B9E3F7A1-4D2C-4E8B-9F1A-3C5E7B9D4F2A");
+		static readonly Guid THE_GUID = new Guid("68F555EB-A951-49C1-9708-C8756A5FAC39");
 
 		/// <summary>
 		/// Gets the parent settings page GUID (none for top-level page).

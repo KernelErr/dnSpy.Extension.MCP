@@ -116,7 +116,7 @@ namespace dnSpy.Extension.MCP {
 	/// </summary>
 	[Export(typeof(McpSettings))]
 	sealed class McpSettingsImpl : McpSettings {
-		static readonly Guid SETTINGS_GUID = new Guid("F7C8E4A2-9D5B-4F3E-8A1C-2B6E7D9F4C3A");
+		static readonly Guid SETTINGS_GUID = new Guid("352907A0-9DF5-4B2B-B47B-95E504CAC301");
 
 		readonly ISettingsService settingsService;
 		McpServer? mcpServer;
