@@ -986,12 +986,14 @@ namespace dnSpy.Extension.MCP
 
         /// <summary>
         /// Decodes a cursor string into pagination state.
-        /// Returns (offset, pageSize) tuple. Returns (0, 100) if cursor is null/invalid.
+        /// Returns (offset, pageSize) tuple. Returns (0, 100) if cursor is null/empty.
+        /// Throws ArgumentException for invalid cursors (per MCP protocol, error code -32602).
         /// </summary>
         (int offset, int pageSize) DecodeCursor(string? cursor)
         {
             const int defaultPageSize = 100;
 
+            // Null or empty cursor is valid - it's the first request
             if (string.IsNullOrEmpty(cursor))
                 return (0, defaultPageSize);
 
@@ -1002,16 +1004,38 @@ namespace dnSpy.Extension.MCP
                 var cursorData = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
 
                 if (cursorData == null)
-                    return (0, defaultPageSize);
+                    throw new ArgumentException("Invalid cursor: cursor data is null");
 
-                var offset = cursorData.TryGetValue("offset", out var offsetObj) && offsetObj is JsonElement offsetElem && offsetElem.TryGetInt32(out var o) ? o : 0;
-                var pageSize = cursorData.TryGetValue("pageSize", out var pageSizeObj) && pageSizeObj is JsonElement pageSizeElem && pageSizeElem.TryGetInt32(out var ps) ? ps : defaultPageSize;
+                if (!cursorData.TryGetValue("offset", out var offsetObj) || !(offsetObj is JsonElement offsetElem) || !offsetElem.TryGetInt32(out var offset))
+                    throw new ArgumentException("Invalid cursor: missing or invalid 'offset' field");
+
+                if (!cursorData.TryGetValue("pageSize", out var pageSizeObj) || !(pageSizeObj is JsonElement pageSizeElem) || !pageSizeElem.TryGetInt32(out var pageSize))
+                    throw new ArgumentException("Invalid cursor: missing or invalid 'pageSize' field");
+
+                if (offset < 0)
+                    throw new ArgumentException("Invalid cursor: offset cannot be negative");
+
+                if (pageSize <= 0)
+                    throw new ArgumentException("Invalid cursor: pageSize must be positive");
 
                 return (offset, pageSize);
             }
-            catch
+            catch (FormatException)
             {
-                return (0, defaultPageSize);
+                throw new ArgumentException("Invalid cursor: not a valid base64 string");
+            }
+            catch (JsonException ex)
+            {
+                throw new ArgumentException($"Invalid cursor: invalid JSON format - {ex.Message}");
+            }
+            catch (ArgumentException)
+            {
+                // Re-throw ArgumentExceptions we created above
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new ArgumentException($"Invalid cursor: {ex.Message}");
             }
         }
 
