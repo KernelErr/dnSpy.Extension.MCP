@@ -49,13 +49,17 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "get_assembly_info",
-                    Description = "Get detailed information about a specific assembly",
+                    Description = "Get detailed information about a specific assembly. Supports pagination of namespaces with default page size of 10.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
                             ["assembly_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
                                 ["description"] = "Name of the assembly"
+                            },
+                            ["cursor"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional cursor for pagination of namespaces (opaque token from previous response). Default page size: 10 namespaces."
                             }
                         },
                         ["required"] = new List<string> { "assembly_name" }
@@ -63,7 +67,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "list_types",
-                    Description = "List all types in an assembly or namespace",
+                    Description = "List all types in an assembly or namespace. Supports pagination with default page size of 10 types.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -74,6 +78,10 @@ namespace dnSpy.Extension.MCP
                             ["namespace"] = new Dictionary<string, object> {
                                 ["type"] = "string",
                                 ["description"] = "Optional namespace filter"
+                            },
+                            ["cursor"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional cursor for pagination (opaque token from previous response). Default page size: 10 types."
                             }
                         },
                         ["required"] = new List<string> { "assembly_name" }
@@ -81,7 +89,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "get_type_info",
-                    Description = "Get detailed information about a specific type including its members",
+                    Description = "Get detailed information about a specific type including its members. First request returns all fields/properties and paginated methods. Subsequent requests (with cursor) return only paginated methods to reduce token usage.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -92,6 +100,10 @@ namespace dnSpy.Extension.MCP
                             ["type_full_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
                                 ["description"] = "Full name of the type including namespace"
+                            },
+                            ["cursor"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional cursor for pagination of methods (opaque token from previous response). Default page size: 10 methods."
                             }
                         },
                         ["required"] = new List<string> { "assembly_name", "type_full_name" }
@@ -121,13 +133,17 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "search_types",
-                    Description = "Search for types by name across all loaded assemblies",
+                    Description = "Search for types by name across all loaded assemblies. Supports pagination with default page size of 10 results.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
                             ["query"] = new Dictionary<string, object> {
                                 ["type"] = "string",
                                 ["description"] = "Search query (supports wildcards)"
+                            },
+                            ["cursor"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional cursor for pagination (opaque token from previous response). Default page size: 10 results."
                             }
                         },
                         ["required"] = new List<string> { "query" }
@@ -168,7 +184,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "get_type_fields",
-                    Description = "Get fields from a type matching a name pattern (supports wildcards like *Bonus*)",
+                    Description = "Get fields from a type matching a name pattern (supports wildcards like *Bonus*). Supports pagination with default page size of 10 fields.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -183,6 +199,10 @@ namespace dnSpy.Extension.MCP
                             ["pattern"] = new Dictionary<string, object> {
                                 ["type"] = "string",
                                 ["description"] = "Field name pattern (supports * wildcard)"
+                            },
+                            ["cursor"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional cursor for pagination of fields (opaque token from previous response). Default page size: 10 fields."
                             }
                         },
                         ["required"] = new List<string> { "assembly_name", "type_full_name", "pattern" }
@@ -317,6 +337,12 @@ namespace dnSpy.Extension.MCP
             if (assembly == null)
                 throw new ArgumentException($"Assembly not found: {assemblyName}");
 
+            string? cursor = null;
+            if (arguments.TryGetValue("cursor", out var cursorObj))
+                cursor = cursorObj.ToString();
+
+            var (offset, pageSize) = DecodeCursor(cursor);
+
             var modules = assembly.Modules.Select(m => new
             {
                 Name = m.Name.String,
@@ -325,24 +351,34 @@ namespace dnSpy.Extension.MCP
                 RuntimeVersion = m.RuntimeVersion
             }).ToList();
 
-            var namespaces = assembly.Modules
+            var allNamespaces = assembly.Modules
                 .SelectMany(m => m.Types)
                 .Select(t => t.Namespace.String)
                 .Distinct()
                 .OrderBy(ns => ns)
                 .ToList();
 
-            var info = new
+            var namespacesToReturn = allNamespaces.Skip(offset).Take(pageSize).ToList();
+            var hasMore = offset + pageSize < allNamespaces.Count;
+
+            var info = new Dictionary<string, object>
             {
-                Name = assembly.Name.String,
-                Version = assembly.Version?.ToString() ?? "N/A",
-                FullName = assembly.FullName,
-                Culture = assembly.Culture ?? "neutral",
-                PublicKeyToken = assembly.PublicKeyToken?.ToString() ?? "null",
-                Modules = modules,
-                Namespaces = namespaces,
-                TypeCount = assembly.Modules.Sum(m => m.Types.Count)
+                ["Name"] = assembly.Name.String,
+                ["Version"] = assembly.Version?.ToString() ?? "N/A",
+                ["FullName"] = assembly.FullName,
+                ["Culture"] = assembly.Culture ?? "neutral",
+                ["PublicKeyToken"] = assembly.PublicKeyToken?.ToString() ?? "null",
+                ["Modules"] = modules,
+                ["Namespaces"] = namespacesToReturn,
+                ["NamespacesTotalCount"] = allNamespaces.Count,
+                ["NamespacesReturnedCount"] = namespacesToReturn.Count,
+                ["TypeCount"] = assembly.Modules.Sum(m => m.Types.Count)
             };
+
+            if (hasMore)
+            {
+                info["nextCursor"] = EncodeCursor(offset + pageSize, pageSize);
+            }
 
             var result = JsonSerializer.Serialize(info, new JsonSerializerOptions { WriteIndented = true });
             return new CallToolResult
@@ -367,6 +403,12 @@ namespace dnSpy.Extension.MCP
             if (arguments.TryGetValue("namespace", out var nsObj))
                 namespaceFilter = nsObj.ToString();
 
+            string? cursor = null;
+            if (arguments.TryGetValue("cursor", out var cursorObj))
+                cursor = cursorObj.ToString();
+
+            var (offset, pageSize) = DecodeCursor(cursor);
+
             var types = assembly.Modules
                 .SelectMany(m => m.Types)
                 .Where(t => string.IsNullOrEmpty(namespaceFilter) || t.Namespace == namespaceFilter)
@@ -386,13 +428,7 @@ namespace dnSpy.Extension.MCP
                 })
                 .ToList();
 
-            var result = JsonSerializer.Serialize(types, new JsonSerializerOptions { WriteIndented = true });
-            return new CallToolResult
-            {
-                Content = new List<ToolContent> {
-                    new ToolContent { Text = result }
-                }
-            };
+            return CreatePaginatedResponse(types, offset, pageSize);
         }
 
         CallToolResult GetTypeInfo(Dictionary<string, object>? arguments)
@@ -407,6 +443,12 @@ namespace dnSpy.Extension.MCP
             var assemblyName = assemblyNameObj.ToString() ?? string.Empty;
             var typeFullName = typeNameObj.ToString() ?? string.Empty;
 
+            string? cursor = null;
+            if (arguments.TryGetValue("cursor", out var cursorObj))
+                cursor = cursorObj.ToString();
+
+            var (offset, pageSize) = DecodeCursor(cursor);
+
             var assembly = FindAssemblyByName(assemblyName);
             if (assembly == null)
                 throw new ArgumentException($"Assembly not found: {assemblyName}");
@@ -415,7 +457,7 @@ namespace dnSpy.Extension.MCP
             if (type == null)
                 throw new ArgumentException($"Type not found: {typeFullName}");
 
-            var methods = type.Methods.Select(m => new
+            var allMethods = type.Methods.Select(m => new
             {
                 Name = m.Name.String,
                 Signature = m.FullName,
@@ -448,24 +490,49 @@ namespace dnSpy.Extension.MCP
                 CanWrite = p.SetMethod != null
             }).ToList();
 
-            var info = new
+            var methodsToReturn = allMethods.Skip(offset).Take(pageSize).ToList();
+            var hasMore = offset + pageSize < allMethods.Count;
+            var isFirstRequest = string.IsNullOrEmpty(cursor);
+
+            var info = new Dictionary<string, object>
             {
-                FullName = type.FullName,
-                Namespace = type.Namespace.String,
-                Name = type.Name.String,
-                IsPublic = type.IsPublic,
-                IsClass = type.IsClass,
-                IsInterface = type.IsInterface,
-                IsEnum = type.IsEnum,
-                IsValueType = type.IsValueType,
-                IsAbstract = type.IsAbstract,
-                IsSealed = type.IsSealed,
-                BaseType = type.BaseType?.FullName ?? "None",
-                Interfaces = type.Interfaces.Select(i => i.Interface.FullName).ToList(),
-                Methods = methods,
-                Fields = fields,
-                Properties = properties
+                ["FullName"] = type.FullName,
+                ["Namespace"] = type.Namespace.String,
+                ["Name"] = type.Name.String,
+                ["IsPublic"] = type.IsPublic,
+                ["IsClass"] = type.IsClass,
+                ["IsInterface"] = type.IsInterface,
+                ["IsEnum"] = type.IsEnum,
+                ["IsValueType"] = type.IsValueType,
+                ["IsAbstract"] = type.IsAbstract,
+                ["IsSealed"] = type.IsSealed,
+                ["BaseType"] = type.BaseType?.FullName ?? "None",
+                ["Interfaces"] = type.Interfaces.Select(i => i.Interface.FullName).ToList(),
+                ["Methods"] = methodsToReturn,
+                ["MethodsTotalCount"] = allMethods.Count,
+                ["MethodsReturnedCount"] = methodsToReturn.Count
             };
+
+            // Only include fields and properties on first request to reduce token usage
+            // For subsequent paginated requests, only return methods
+            if (isFirstRequest)
+            {
+                info["Fields"] = fields;
+                info["FieldsCount"] = fields.Count;
+                info["Properties"] = properties;
+                info["PropertiesCount"] = properties.Count;
+            }
+            else
+            {
+                // For paginated requests, just include counts
+                info["FieldsCount"] = fields.Count;
+                info["PropertiesCount"] = properties.Count;
+            }
+
+            if (hasMore)
+            {
+                info["nextCursor"] = EncodeCursor(offset + pageSize, pageSize);
+            }
 
             var result = JsonSerializer.Serialize(info, new JsonSerializerOptions { WriteIndented = true });
             return new CallToolResult
@@ -529,6 +596,12 @@ namespace dnSpy.Extension.MCP
             var query = queryObj.ToString() ?? string.Empty;
             var queryLower = query.ToLowerInvariant();
 
+            string? cursor = null;
+            if (arguments.TryGetValue("cursor", out var cursorObj))
+                cursor = cursorObj.ToString();
+
+            var (offset, pageSize) = DecodeCursor(cursor);
+
             var results = documentTreeView.GetAllModuleNodes()
                 .SelectMany(m => m.Document?.ModuleDef?.Types ?? Enumerable.Empty<TypeDef>())
                 .Where(t => t.FullName.ToLowerInvariant().Contains(queryLower))
@@ -540,16 +613,9 @@ namespace dnSpy.Extension.MCP
                     Name = t.Name.String,
                     IsPublic = t.IsPublic
                 })
-                .Take(100)
                 .ToList();
 
-            var result = JsonSerializer.Serialize(results, new JsonSerializerOptions { WriteIndented = true });
-            return new CallToolResult
-            {
-                Content = new List<ToolContent> {
-                    new ToolContent { Text = result }
-                }
-            };
+            return CreatePaginatedResponse(results, offset, pageSize);
         }
 
         CallToolResult GenerateBepInExPlugin(Dictionary<string, object>? arguments)
@@ -661,6 +727,12 @@ namespace dnSpy.Extension.MCP
             var typeFullName = typeNameObj.ToString() ?? string.Empty;
             var pattern = patternObj.ToString() ?? string.Empty;
 
+            string? cursor = null;
+            if (arguments.TryGetValue("cursor", out var cursorObj))
+                cursor = cursorObj.ToString();
+
+            var (offset, pageSize) = DecodeCursor(cursor);
+
             var assembly = FindAssemblyByName(assemblyName);
             if (assembly == null)
                 throw new ArgumentException($"Assembly not found: {assemblyName}");
@@ -673,7 +745,7 @@ namespace dnSpy.Extension.MCP
             var regexPattern = "^" + System.Text.RegularExpressions.Regex.Escape(pattern).Replace("\\*", ".*") + "$";
             var regex = new System.Text.RegularExpressions.Regex(regexPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
-            var matchingFields = type.Fields
+            var allMatchingFields = type.Fields
                 .Where(f => regex.IsMatch(f.Name.String))
                 .Select(f => new
                 {
@@ -687,13 +759,24 @@ namespace dnSpy.Extension.MCP
                 })
                 .ToList();
 
-            var result = JsonSerializer.Serialize(new
+            var fieldsToReturn = allMatchingFields.Skip(offset).Take(pageSize).ToList();
+            var hasMore = offset + pageSize < allMatchingFields.Count;
+
+            var response = new Dictionary<string, object>
             {
-                Type = typeFullName,
-                Pattern = pattern,
-                MatchCount = matchingFields.Count,
-                Fields = matchingFields
-            }, new JsonSerializerOptions { WriteIndented = true });
+                ["Type"] = typeFullName,
+                ["Pattern"] = pattern,
+                ["MatchCount"] = allMatchingFields.Count,
+                ["ReturnedCount"] = fieldsToReturn.Count,
+                ["Fields"] = fieldsToReturn
+            };
+
+            if (hasMore)
+            {
+                response["nextCursor"] = EncodeCursor(offset + pageSize, pageSize);
+            }
+
+            var result = JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
 
             return new CallToolResult
             {
@@ -903,6 +986,101 @@ namespace dnSpy.Extension.MCP
             return assembly.Modules
                 .SelectMany(m => m.Types)
                 .FirstOrDefault(t => t.FullName.Equals(fullName, StringComparison.Ordinal));
+        }
+
+        /// <summary>
+        /// Encodes pagination state into an opaque cursor string.
+        /// </summary>
+        string EncodeCursor(int offset, int pageSize)
+        {
+            var cursorData = new { offset, pageSize };
+            var json = JsonSerializer.Serialize(cursorData);
+            var bytes = Encoding.UTF8.GetBytes(json);
+            return Convert.ToBase64String(bytes);
+        }
+
+        /// <summary>
+        /// Decodes a cursor string into pagination state.
+        /// Returns (offset, pageSize) tuple. Returns (0, 10) if cursor is null/empty.
+        /// Throws ArgumentException for invalid cursors (per MCP protocol, error code -32602).
+        /// </summary>
+        (int offset, int pageSize) DecodeCursor(string? cursor)
+        {
+            const int defaultPageSize = 10;
+
+            // Null or empty cursor is valid - it's the first request
+            if (string.IsNullOrEmpty(cursor))
+                return (0, defaultPageSize);
+
+            try
+            {
+                var bytes = Convert.FromBase64String(cursor);
+                var json = Encoding.UTF8.GetString(bytes);
+                var cursorData = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
+
+                if (cursorData == null)
+                    throw new ArgumentException("Invalid cursor: cursor data is null");
+
+                if (!cursorData.TryGetValue("offset", out var offsetObj) || !(offsetObj is JsonElement offsetElem) || !offsetElem.TryGetInt32(out var offset))
+                    throw new ArgumentException("Invalid cursor: missing or invalid 'offset' field");
+
+                if (!cursorData.TryGetValue("pageSize", out var pageSizeObj) || !(pageSizeObj is JsonElement pageSizeElem) || !pageSizeElem.TryGetInt32(out var pageSize))
+                    throw new ArgumentException("Invalid cursor: missing or invalid 'pageSize' field");
+
+                if (offset < 0)
+                    throw new ArgumentException("Invalid cursor: offset cannot be negative");
+
+                if (pageSize <= 0)
+                    throw new ArgumentException("Invalid cursor: pageSize must be positive");
+
+                return (offset, pageSize);
+            }
+            catch (FormatException)
+            {
+                throw new ArgumentException("Invalid cursor: not a valid base64 string");
+            }
+            catch (JsonException ex)
+            {
+                throw new ArgumentException($"Invalid cursor: invalid JSON format - {ex.Message}");
+            }
+            catch (ArgumentException)
+            {
+                // Re-throw ArgumentExceptions we created above
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new ArgumentException($"Invalid cursor: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Creates a paginated response with optional nextCursor.
+        /// </summary>
+        CallToolResult CreatePaginatedResponse<T>(List<T> allItems, int offset, int pageSize)
+        {
+            var itemsToReturn = allItems.Skip(offset).Take(pageSize).ToList();
+            var hasMore = offset + pageSize < allItems.Count;
+
+            var response = new Dictionary<string, object>
+            {
+                ["items"] = itemsToReturn,
+                ["total_count"] = allItems.Count,
+                ["returned_count"] = itemsToReturn.Count
+            };
+
+            if (hasMore)
+            {
+                response["nextCursor"] = EncodeCursor(offset + pageSize, pageSize);
+            }
+
+            var result = JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
+            return new CallToolResult
+            {
+                Content = new List<ToolContent> {
+                    new ToolContent { Text = result }
+                }
+            };
         }
     }
 

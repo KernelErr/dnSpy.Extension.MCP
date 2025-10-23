@@ -317,7 +317,20 @@ namespace dnSpy.Extension.MCP {
 					Result = result
 				};
 			}
+			catch (ArgumentException ex) {
+				// ArgumentException indicates invalid parameters (MCP error code -32602)
+				settings.Log($"Invalid params in {request.Method}: {ex.Message}");
+				return new McpResponse {
+					JsonRpc = "2.0",
+					Id = request.Id,
+					Error = new McpError {
+						Code = -32602,
+						Message = ex.Message
+					}
+				};
+			}
 			catch (Exception ex) {
+				// Other exceptions are internal errors (MCP error code -32603)
 				settings.Log($"ERROR in {request.Method}: {ex.Message}");
 				return new McpResponse {
 					JsonRpc = "2.0",
