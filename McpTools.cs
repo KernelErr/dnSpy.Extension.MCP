@@ -139,7 +139,7 @@ namespace dnSpy.Extension.MCP
                         ["properties"] = new Dictionary<string, object> {
                             ["query"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Search query (supports wildcards)"
+                                ["description"] = "Search query. Use * for wildcards (e.g., 'Player*' for types starting with Player, '*Controller' for types ending with Controller, '*Player*' for types containing Player). Without wildcards, performs case-insensitive substring matching."
                             },
                             ["cursor"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -602,9 +602,20 @@ namespace dnSpy.Extension.MCP
 
             var (offset, pageSize) = DecodeCursor(cursor);
 
+            // Check if query contains wildcards
+            bool hasWildcard = query.Contains("*");
+            System.Text.RegularExpressions.Regex? regex = null;
+
+            if (hasWildcard)
+            {
+                // Convert wildcard pattern to regex
+                var regexPattern = "^" + System.Text.RegularExpressions.Regex.Escape(queryLower).Replace("\\*", ".*") + "$";
+                regex = new System.Text.RegularExpressions.Regex(regexPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            }
+
             var results = documentTreeView.GetAllModuleNodes()
                 .SelectMany(m => m.Document?.ModuleDef?.Types ?? Enumerable.Empty<TypeDef>())
-                .Where(t => t.FullName.ToLowerInvariant().Contains(queryLower))
+                .Where(t => hasWildcard ? regex!.IsMatch(t.FullName) : t.FullName.ToLowerInvariant().Contains(queryLower))
                 .Select(t => new
                 {
                     AssemblyName = t.Module?.Assembly?.Name.String ?? "Unknown",
