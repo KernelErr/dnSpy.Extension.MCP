@@ -139,7 +139,7 @@ namespace dnSpy.Extension.MCP
                         ["properties"] = new Dictionary<string, object> {
                             ["query"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Search query. Use * for wildcards (e.g., 'Player*' for types starting with Player, '*Controller' for types ending with Controller, '*Player*' for types containing Player). Without wildcards, performs case-insensitive substring matching."
+                                ["description"] = "Search query. Wildcards (*) match against FullName (namespace + type name). Recommended patterns: '*TypeName' for suffix (e.g., '*Controller' finds MyNamespace.PlayerController), '*.Keyword*' for types containing keyword, 'Full.Namespace.Path.*' for specific namespace. Without wildcards, performs case-insensitive substring matching (e.g., 'Controller' finds all types with 'Controller' in name)."
                             },
                             ["cursor"] = new Dictionary<string, object> {
                                 ["type"] = "string",
