@@ -49,7 +49,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "get_assembly_info",
-                    Description = "Get detailed information about a specific assembly",
+                    Description = "Get detailed information about a specific assembly. Supports pagination of namespaces with default page size of 50.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -59,7 +59,7 @@ namespace dnSpy.Extension.MCP
                             },
                             ["cursor"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Optional cursor for pagination (opaque token from previous response)"
+                                ["description"] = "Optional cursor for pagination of namespaces (opaque token from previous response). Default page size: 50 namespaces."
                             }
                         },
                         ["required"] = new List<string> { "assembly_name" }
@@ -67,7 +67,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "list_types",
-                    Description = "List all types in an assembly or namespace",
+                    Description = "List all types in an assembly or namespace. Supports pagination with default page size of 50 types.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -81,7 +81,7 @@ namespace dnSpy.Extension.MCP
                             },
                             ["cursor"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Optional cursor for pagination (opaque token from previous response)"
+                                ["description"] = "Optional cursor for pagination (opaque token from previous response). Default page size: 50 types."
                             }
                         },
                         ["required"] = new List<string> { "assembly_name" }
@@ -89,7 +89,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "get_type_info",
-                    Description = "Get detailed information about a specific type including its members",
+                    Description = "Get detailed information about a specific type including its members. First request returns all fields/properties and paginated methods. Subsequent requests (with cursor) return only paginated methods to reduce token usage.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -103,7 +103,7 @@ namespace dnSpy.Extension.MCP
                             },
                             ["cursor"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Optional cursor for pagination of methods (opaque token from previous response)"
+                                ["description"] = "Optional cursor for pagination of methods (opaque token from previous response). Default page size: 50 methods."
                             }
                         },
                         ["required"] = new List<string> { "assembly_name", "type_full_name" }
@@ -133,7 +133,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "search_types",
-                    Description = "Search for types by name across all loaded assemblies",
+                    Description = "Search for types by name across all loaded assemblies. Supports pagination with default page size of 50 results.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -143,7 +143,7 @@ namespace dnSpy.Extension.MCP
                             },
                             ["cursor"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Optional cursor for pagination (opaque token from previous response)"
+                                ["description"] = "Optional cursor for pagination (opaque token from previous response). Default page size: 50 results."
                             }
                         },
                         ["required"] = new List<string> { "query" }
@@ -184,7 +184,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "get_type_fields",
-                    Description = "Get fields from a type matching a name pattern (supports wildcards like *Bonus*)",
+                    Description = "Get fields from a type matching a name pattern (supports wildcards like *Bonus*). Supports pagination with default page size of 50 fields.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -202,7 +202,7 @@ namespace dnSpy.Extension.MCP
                             },
                             ["cursor"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Optional cursor for pagination (opaque token from previous response)"
+                                ["description"] = "Optional cursor for pagination of fields (opaque token from previous response). Default page size: 50 fields."
                             }
                         },
                         ["required"] = new List<string> { "assembly_name", "type_full_name", "pattern" }
@@ -492,6 +492,7 @@ namespace dnSpy.Extension.MCP
 
             var methodsToReturn = allMethods.Skip(offset).Take(pageSize).ToList();
             var hasMore = offset + pageSize < allMethods.Count;
+            var isFirstRequest = string.IsNullOrEmpty(cursor);
 
             var info = new Dictionary<string, object>
             {
@@ -509,10 +510,24 @@ namespace dnSpy.Extension.MCP
                 ["Interfaces"] = type.Interfaces.Select(i => i.Interface.FullName).ToList(),
                 ["Methods"] = methodsToReturn,
                 ["MethodsTotalCount"] = allMethods.Count,
-                ["MethodsReturnedCount"] = methodsToReturn.Count,
-                ["Fields"] = fields,
-                ["Properties"] = properties
+                ["MethodsReturnedCount"] = methodsToReturn.Count
             };
+
+            // Only include fields and properties on first request to reduce token usage
+            // For subsequent paginated requests, only return methods
+            if (isFirstRequest)
+            {
+                info["Fields"] = fields;
+                info["FieldsCount"] = fields.Count;
+                info["Properties"] = properties;
+                info["PropertiesCount"] = properties.Count;
+            }
+            else
+            {
+                // For paginated requests, just include counts
+                info["FieldsCount"] = fields.Count;
+                info["PropertiesCount"] = properties.Count;
+            }
 
             if (hasMore)
             {
@@ -986,12 +1001,12 @@ namespace dnSpy.Extension.MCP
 
         /// <summary>
         /// Decodes a cursor string into pagination state.
-        /// Returns (offset, pageSize) tuple. Returns (0, 100) if cursor is null/empty.
+        /// Returns (offset, pageSize) tuple. Returns (0, 50) if cursor is null/empty.
         /// Throws ArgumentException for invalid cursors (per MCP protocol, error code -32602).
         /// </summary>
         (int offset, int pageSize) DecodeCursor(string? cursor)
         {
-            const int defaultPageSize = 100;
+            const int defaultPageSize = 50;
 
             // Null or empty cursor is valid - it's the first request
             if (string.IsNullOrEmpty(cursor))
