@@ -1,41 +1,72 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel.Composition;
 using System.IO;
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-#if NET
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-#endif
 
 namespace dnSpy.Extension.MCP {
 	/// <summary>
 	/// HTTP server implementing the Model Context Protocol (MCP) for exposing dnSpy analysis tools to AI assistants.
-	/// Uses Kestrel for .NET 8.0+ and HttpListener for .NET Framework 4.8.
+	/// Uses <see cref="HttpListener"/> on both .NET Framework 4.8 and .NET 10. Kestrel was considered
+	/// but dropped: dnSpy's self-contained .NET bundle does not include ASP.NET Core, so MEF
+	/// composition of this type would fail with a silent TypeLoadException if Kestrel types were
+	/// referenced here.
 	/// </summary>
 	[Export(typeof(McpServer))]
 	sealed class McpServer : IDisposable {
 		readonly McpSettings settings;
 		readonly McpTools tools;
 		readonly BepInExResources bepinexResources;
-#if NET
-		IHost? webHost;
-#else
 		HttpListener? httpListener;
-#endif
 		CancellationTokenSource? cts;
+		int actualPort;
+		readonly ConcurrentDictionary<string, SseSession> sseSessions = new ConcurrentDictionary<string, SseSession>();
+
+		/// <summary>
+		/// The port the server is actually listening on. May differ from <see cref="McpSettings.Port"/>
+		/// if that port was taken and fallback to port+1 was used.
+		/// </summary>
+		public int ActualPort => actualPort;
 
 		// JSON serialization options to ignore null values (JSON-RPC 2.0 requirement)
 		static readonly JsonSerializerOptions jsonOptions = new JsonSerializerOptions {
 			DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
 		};
+
+		const int portSearchAttempts = 20;
+
+		/// <summary>
+		/// Probes for an available TCP port on any interface, starting at <paramref name="startPort"/>
+		/// and incrementing up to <paramref name="maxAttempts"/> times. Returns the first port that
+		/// can be bound. There is a TOCTOU race here (another process could steal the port before
+		/// the real server binds it), but it is good enough for a local dev tool.
+		/// </summary>
+		static int FindAvailablePort(int startPort, int maxAttempts) {
+			for (int i = 0; i < maxAttempts; i++) {
+				int port = startPort + i;
+				if (port < 1 || port > 65535)
+					break;
+				TcpListener? listener = null;
+				try {
+					listener = new TcpListener(IPAddress.Any, port);
+					listener.Start();
+					return port;
+				}
+				catch (SocketException) {
+					continue;
+				}
+				finally {
+					listener?.Stop();
+				}
+			}
+			throw new InvalidOperationException($"No available port in range {startPort}..{startPort + maxAttempts - 1}");
+		}
 
 		/// <summary>
 		/// Initializes the MCP server with the specified settings, tools, and documentation.
@@ -51,119 +82,38 @@ namespace dnSpy.Extension.MCP {
 		/// Starts the MCP server if enabled in settings.
 		/// </summary>
 		public void Start() {
-			if (!settings.EnableServer)
+			if (!settings.EnableServer) {
+				settings.Log("Start() called but EnableServer is false; nothing to do.");
 				return;
+			}
 
-#if NET
-			if (webHost != null)
-				return; // Already running
-			settings.Log($"Starting MCP server on port {settings.Port}");
-#else
-			if (httpListener != null)
-				return; // Already running
-			settings.Log($"Starting MCP server on {settings.Host}:{settings.Port}");
-#endif
+			if (httpListener != null) {
+				settings.Log("Start() called but httpListener is already running; ignoring.");
+				return;
+			}
 
 			try {
-				cts = new CancellationTokenSource();
+				actualPort = FindAvailablePort(settings.Port, portSearchAttempts);
+				if (actualPort != settings.Port)
+					settings.Log($"Port {settings.Port} is in use; falling back to {actualPort}");
 
-#if NET
-				StartKestrelServer();
-#else
+				settings.Log($"Starting MCP server on {settings.Host}:{actualPort}");
+				cts = new CancellationTokenSource();
 				StartHttpListenerServer();
-#endif
 			}
 			catch (Exception ex) {
 				settings.Log($"ERROR starting server: {ex.GetType().Name}: {ex.Message}");
 			}
 		}
 
-#if NET
-		void StartKestrelServer() {
-			Task.Run(() => {
-				try {
-					var builder = WebApplication.CreateBuilder(new WebApplicationOptions {
-						WebRootPath = null
-					});
-
-					// Configure Kestrel to listen on the specified port
-					builder.WebHost.ConfigureKestrel(options => {
-						options.ListenAnyIP(settings.Port);
-					});
-
-					var app = builder.Build();
-
-					// Enable CORS for all origins
-					app.Use(async (context, next) => {
-						context.Response.Headers.Append("Access-Control-Allow-Origin", "*");
-						context.Response.Headers.Append("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-						context.Response.Headers.Append("Access-Control-Allow-Headers", "Content-Type");
-
-						if (context.Request.Method == "OPTIONS") {
-							context.Response.StatusCode = 200;
-							return;
-						}
-
-						await next();
-					});
-
-					// MCP endpoint
-					app.MapPost("/", async context => {
-						try {
-							using var reader = new StreamReader(context.Request.Body);
-							var body = await reader.ReadToEndAsync();
-
-							var request = JsonSerializer.Deserialize<McpRequest>(body);
-							if (request == null) {
-								context.Response.StatusCode = 400;
-								await context.Response.WriteAsync("Invalid request");
-								return;
-							}
-
-							var response = HandleRequest(request);
-							var responseJson = JsonSerializer.Serialize(response, jsonOptions);
-
-							context.Response.ContentType = "application/json";
-							await context.Response.WriteAsync(responseJson);
-						}
-						catch (Exception ex) {
-							settings.Log($"ERROR handling request: {ex.Message}");
-							var errorResponse = new McpResponse {
-								JsonRpc = "2.0",
-								Error = new McpError {
-									Code = -32603,
-									Message = "Internal error",
-									Data = ex.Message
-								}
-							};
-
-							context.Response.ContentType = "application/json";
-							await context.Response.WriteAsync(JsonSerializer.Serialize(errorResponse, jsonOptions));
-						}
-					});
-
-					// Health check endpoint
-					app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "dnSpy MCP Server" }));
-
-					webHost = app;
-					settings.Log($"MCP server started on port {settings.Port}");
-					app.Run();
-				}
-				catch (Exception ex) {
-					settings.Log($"ERROR starting Kestrel server: {ex.GetType().Name}: {ex.Message}");
-					webHost = null;
-				}
-			}, cts!.Token);
-		}
-#else
 		void StartHttpListenerServer() {
 			Task.Run(() => {
 				try {
 					httpListener = new HttpListener();
-					var prefix = $"http://{settings.Host}:{settings.Port}/";
+					var prefix = $"http://{settings.Host}:{actualPort}/";
 					httpListener.Prefixes.Add(prefix);
 					httpListener.Start();
-					settings.Log($"MCP server started on {settings.Host}:{settings.Port}");
+					settings.Log($"MCP server started on {settings.Host}:{actualPort}");
 
 					while (!cts!.Token.IsCancellationRequested) {
 						try {
@@ -205,6 +155,85 @@ namespace dnSpy.Extension.MCP {
 					context.Response.ContentLength64 = buffer.Length;
 					context.Response.OutputStream.Write(buffer, 0, buffer.Length);
 					context.Response.Close();
+					return;
+				}
+
+				// MCP SSE transport: GET /sse opens a long-lived event-stream. The handler
+				// holds the HttpListener response open until the client disconnects or the
+				// server shuts down. Responses to posted messages are written back over this
+				// same stream as `message` events.
+				if (context.Request.Url?.AbsolutePath == "/sse" && context.Request.HttpMethod == "GET") {
+					context.Response.ContentType = "text/event-stream";
+					context.Response.Headers["Cache-Control"] = "no-cache";
+					context.Response.SendChunked = true;
+					context.Response.KeepAlive = true;
+
+					var sessionId = Guid.NewGuid().ToString("N");
+					var session = new SseSession(sessionId, context.Response.OutputStream);
+					sseSessions[sessionId] = session;
+					settings.Log($"SSE session opened: {sessionId}");
+
+					try {
+						session.WriteEvent("endpoint", $"/message?sessionId={sessionId}");
+
+						// Keep the connection alive until the client closes or the server stops.
+						// We detect client disconnection by sending a periodic SSE comment ping.
+						while (!cts!.Token.IsCancellationRequested) {
+							Thread.Sleep(15000);
+							try {
+								session.WriteComment("ping");
+							}
+							catch {
+								break;
+							}
+						}
+					}
+					finally {
+						sseSessions.TryRemove(sessionId, out _);
+						settings.Log($"SSE session closed: {sessionId}");
+						try { context.Response.OutputStream.Close(); } catch { /* ignore */ }
+						try { context.Response.Close(); } catch { /* ignore */ }
+					}
+					return;
+				}
+
+				if (context.Request.Url?.AbsolutePath == "/message" && context.Request.HttpMethod == "POST") {
+					var sessionId = context.Request.QueryString["sessionId"];
+					if (string.IsNullOrEmpty(sessionId) || !sseSessions.TryGetValue(sessionId!, out var session)) {
+						context.Response.StatusCode = 404;
+						var bytes = Encoding.UTF8.GetBytes("Unknown sessionId");
+						context.Response.OutputStream.Write(bytes, 0, bytes.Length);
+						context.Response.Close();
+						return;
+					}
+
+					using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding);
+					var body = reader.ReadToEnd();
+
+					var request = JsonSerializer.Deserialize<McpRequest>(body);
+					if (request == null) {
+						context.Response.StatusCode = 400;
+						context.Response.Close();
+						return;
+					}
+
+					// Ack the POST. The JSON-RPC response is delivered over the SSE stream.
+					context.Response.StatusCode = 202;
+					var ack = Encoding.UTF8.GetBytes("Accepted");
+					context.Response.OutputStream.Write(ack, 0, ack.Length);
+					context.Response.Close();
+
+					try {
+						bool isNotification = request.Method?.StartsWith("notifications/", StringComparison.Ordinal) ?? false;
+						var response = HandleRequest(request);
+						if (!isNotification) {
+							var responseJson = JsonSerializer.Serialize(response, jsonOptions);
+							session.WriteEvent("message", responseJson);
+						}
+					}
+					catch (Exception ex) {
+						settings.Log($"ERROR writing SSE message: {ex.Message}");
+					}
 					return;
 				}
 
@@ -259,7 +288,6 @@ namespace dnSpy.Extension.MCP {
 				}
 			}
 		}
-#endif
 
 		/// <summary>
 		/// Stops the MCP server if it's running.
@@ -267,17 +295,10 @@ namespace dnSpy.Extension.MCP {
 		public void Stop() {
 			try {
 				cts?.Cancel();
-#if NET
-				webHost?.StopAsync().Wait(TimeSpan.FromSeconds(5));
-				webHost?.Dispose();
-				webHost = null;
-				settings.Log("MCP server stopped");
-#else
 				httpListener?.Stop();
 				httpListener?.Close();
 				httpListener = null;
 				settings.Log("MCP server stopped");
-#endif
 				cts?.Dispose();
 				cts = null;
 			}
@@ -417,6 +438,51 @@ namespace dnSpy.Extension.MCP {
 		/// </summary>
 		public void Dispose() {
 			Stop();
+		}
+	}
+
+	/// <summary>
+	/// A single MCP SSE transport session. Wraps the server-side response stream that the
+	/// client is reading from, and serializes writes to it. The same stream is written to
+	/// from the /sse handler (for the initial endpoint event and keep-alive pings) and from
+	/// the /message POST handler (for JSON-RPC responses triggered by client requests), so
+	/// all writes go through <see cref="writeLock"/>.
+	/// </summary>
+	sealed class SseSession {
+		readonly Stream stream;
+		readonly object writeLock = new object();
+
+		public string Id { get; }
+
+		public SseSession(string id, Stream stream) {
+			Id = id;
+			this.stream = stream;
+		}
+
+		/// <summary>
+		/// Writes an SSE named event. <paramref name="data"/> is split on newlines so that
+		/// multi-line JSON is encoded as multiple "data:" lines per the SSE spec.
+		/// </summary>
+		public void WriteEvent(string eventName, string data) {
+			var sb = new StringBuilder();
+			sb.Append("event: ").Append(eventName).Append('\n');
+			foreach (var line in data.Split('\n'))
+				sb.Append("data: ").Append(line.TrimEnd('\r')).Append('\n');
+			sb.Append('\n');
+			WriteRaw(sb.ToString());
+		}
+
+		/// <summary>
+		/// Writes an SSE comment line. Used for keep-alive pings.
+		/// </summary>
+		public void WriteComment(string text) => WriteRaw(": " + text + "\n\n");
+
+		void WriteRaw(string text) {
+			var bytes = Encoding.UTF8.GetBytes(text);
+			lock (writeLock) {
+				stream.Write(bytes, 0, bytes.Length);
+				stream.Flush();
+			}
 		}
 	}
 }

@@ -17,20 +17,16 @@
     <PackageReference Include="Microsoft.VisualStudio.Text.UI.Wpf" Version="$(MSVSTextVersion)" />
   </ItemGroup>
 
-  <!-- ASP.NET Core packages - only for .NET (not .NET Framework 4.8) -->
-  <ItemGroup Condition=" '$(IsDotNet)' == 'true' ">
-    <FrameworkReference Include="Microsoft.AspNetCore.App" />
-  </ItemGroup>
+  <!--
+    We use System.Net.HttpListener on both TFMs. Referencing ASP.NET Core (Kestrel) would
+    compile fine, but loading the resulting extension into dnSpy at runtime fails silently:
+    dnSpy's self-contained .NET bundle does not include ASP.NET Core, so TypeLoad faults
+    during MEF composition and the extension's IExtension part is silently skipped.
+  -->
 
-  <!-- For .NET Framework 4.8, we'll use a simpler HTTP listener approach -->
+  <!-- System.Text.Json is in the BCL for .NET 10; needs a package on .NET Framework 4.8. -->
   <ItemGroup Condition=" '$(IsDotNetFramework)' == 'true' ">
-    <PackageReference Include="Newtonsoft.Json" Version="$(NewtonsoftJsonVersion)" />
-  </ItemGroup>
-
-  <!-- System.Text.Json for both targets -->
-  <ItemGroup>
-    <PackageReference Include="System.Text.Json" Version="8.0.5" Condition=" '$(IsDotNet)' == 'true' " />
-    <PackageReference Include="System.Text.Json" Version="8.0.5" Condition=" '$(IsDotNetFramework)' == 'true' " />
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
   </ItemGroup>
 
 </Project>

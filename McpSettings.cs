@@ -72,26 +72,52 @@ namespace dnSpy.Extension.MCP {
 		}
 
 		/// <summary>
-		/// Adds a log message with timestamp to the log collection.
+		/// Path of the on-disk fallback log. Writes here always succeed and do not depend on the
+		/// WPF dispatcher being alive or on a settings dialog being open, which makes this the
+		/// authoritative record of what the extension actually did at startup.
+		/// </summary>
+		public static readonly string LogFilePath = @"D:\dnspy-mcp.log";
+
+		static readonly object logFileLock = new object();
+
+		/// <summary>
+		/// Adds a log message with timestamp to the log collection and mirrors it to
+		/// <see cref="LogFilePath"/>. File writes are the authoritative log — the in-memory
+		/// collection is best-effort for the settings UI only.
 		/// </summary>
 		/// <param name="message">The log message to add.</param>
 		public void Log(string message) {
 			var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
 			var logEntry = $"[{timestamp}] {message}";
 
-			// Add to collection on UI thread if available
-			if (System.Windows.Application.Current?.Dispatcher != null) {
-				System.Windows.Application.Current.Dispatcher.Invoke(() => {
-					LogMessages.Add(logEntry);
-					while (LogMessages.Count > 100)
-						LogMessages.RemoveAt(0);
-					LogText = string.Join(Environment.NewLine, LogMessages);
-				});
-			} else {
+			// Always mirror to disk first — UI writes can fail silently if the dispatcher is unavailable.
+			try {
+				lock (logFileLock)
+					System.IO.File.AppendAllText(LogFilePath, logEntry + Environment.NewLine);
+			}
+			catch {
+				// If we can't write the log file, there is nowhere sensible to report that failure.
+			}
+
+			void addToCollection() {
 				LogMessages.Add(logEntry);
 				while (LogMessages.Count > 100)
 					LogMessages.RemoveAt(0);
 				LogText = string.Join(Environment.NewLine, LogMessages);
+			}
+
+			// Add to collection on UI thread if available
+			var app = System.Windows.Application.Current;
+			if (app?.Dispatcher != null && !app.Dispatcher.HasShutdownStarted) {
+				try {
+					app.Dispatcher.Invoke(addToCollection);
+				}
+				catch {
+					// Dispatcher may be busy or unavailable during startup; file log still has the entry.
+				}
+			}
+			else {
+				addToCollection();
 			}
 		}
 

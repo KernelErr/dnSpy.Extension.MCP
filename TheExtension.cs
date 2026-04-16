@@ -23,6 +23,8 @@ namespace dnSpy.Extension.MCP {
 			// Allow settings to control the server dynamically
 			if (settings is McpSettingsImpl settingsImpl)
 				settingsImpl.SetServer(mcpServer);
+
+			settings.Log($"TheExtension constructed (EnableServer={settings.EnableServer}, Port={settings.Port})");
 		}
 
 		/// <summary>
