@@ -37,15 +37,30 @@ English: see [README.md](README.md).
 
 ## 安装
 
-### 从 Release 下载
+### 推荐方式：开箱即用的整合包
 
-1. 到 [Releases](https://github.com/KernelErr/dnSpy.Extension.MCP/releases) 页面下载最新构建产物。
-2. 根据 dnSpy 的运行时选择对应 DLL：
+打开 [Releases](https://github.com/KernelErr/dnSpy.Extension.MCP/releases) 页面，下载与你系统匹配的整合包 — **扩展已放在正确的位置，不需要操心路径**：
+
+| 文件 | 内容 | 运行时要求 |
+|------|------|-------------|
+| `dnSpy-MCP-win-x64.zip` | dnSpy .NET 10 自包含 x64 + MCP 扩展 | 无需 — 运行时已内含 |
+| `dnSpy-MCP-win-x86.zip` | dnSpy .NET 10 自包含 x86 + MCP 扩展 | 无需 — 运行时已内含 |
+| `dnSpy-MCP-net48.zip` | dnSpy .NET Framework 4.8 版 + MCP 扩展 | .NET Framework 4.8（Windows 10+ 默认自带） |
+
+1. 下载并解压到任意目录。
+2. 双击 `dnSpy.exe`。
+3. 打开**编辑 → 设置 → MCP Server**，勾选 **Enable Server**，点击确定。
+
+搞定。如果你已经装好了 dnSpy、只想拿插件，参考下面的"仅插件"方式。
+
+### 仅插件（已安装 dnSpy 的用户）
+
+1. 根据 dnSpy 的运行时选择对应 DLL：
    - `dnSpy.Extension.MCP-net48.dll` — .NET Framework 4.8 版 dnSpy
    - `dnSpy.Extension.MCP-net10.0-windows.dll` — .NET 10 版 dnSpy
-3. 重命名为 `dnSpy.Extension.MCP.x.dll`（`.x` 后缀是 dnSpy 加载扩展的必要标记）。
-4. 在 `<dnSpy 安装目录>\bin\Extensions\` 下新建一个名为 `dnSpy.Extension.MCP` 的文件夹，把 DLL 放进去。
-5. 重启 dnSpy。
+2. 重命名为 `dnSpy.Extension.MCP.x.dll`（`.x` 后缀是 dnSpy 加载扩展的必要标记）。
+3. 在 `<dnSpy 安装目录>\bin\Extensions\` 下新建一个名为 `dnSpy.Extension.MCP` 的文件夹，把 DLL 放进去。
+4. 重启 dnSpy。
 
 **最终路径必须完全符合下面的层级** — 子文件夹名与 DLL 同名、保留 `.x.dll` 后缀、且恰好位于 `Extensions\` 下一层：
 

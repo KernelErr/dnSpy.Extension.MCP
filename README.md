@@ -37,15 +37,30 @@ All docs ship inside the DLL — no network required.
 
 ## Installation
 
-### From release
+### Recommended: all-in-one zip
 
-1. Download the latest artifact from the [Releases](https://github.com/KernelErr/dnSpy.Extension.MCP/releases) page.
-2. Pick the DLL matching your dnSpy build:
+Head to [Releases](https://github.com/KernelErr/dnSpy.Extension.MCP/releases) and download the bundle that matches your system — **the extension is already placed inside, no paths to figure out**:
+
+| File | Contents | Runtime requirement |
+|------|----------|---------------------|
+| `dnSpy-MCP-win-x64.zip` | dnSpy .NET 10 self-contained x64 + MCP extension | None — runtime is bundled |
+| `dnSpy-MCP-win-x86.zip` | dnSpy .NET 10 self-contained x86 + MCP extension | None — runtime is bundled |
+| `dnSpy-MCP-net48.zip` | dnSpy .NET Framework 4.8 build + MCP extension | .NET Framework 4.8 (default on Windows 10+) |
+
+1. Download and unzip anywhere.
+2. Double-click `dnSpy.exe`.
+3. Open **Edit → Settings → MCP Server**, tick **Enable Server**, click OK.
+
+That's it. If you already use dnSpy and just want the plugin, see "Plugin-only" below.
+
+### Plugin-only (for users who already have dnSpy installed)
+
+1. Download the DLL matching your dnSpy runtime:
    - `dnSpy.Extension.MCP-net48.dll` — .NET Framework 4.8 dnSpy
    - `dnSpy.Extension.MCP-net10.0-windows.dll` — .NET 10 dnSpy
-3. Rename to `dnSpy.Extension.MCP.x.dll` (the `.x` suffix is required by dnSpy's extension loader).
-4. Create the folder `dnSpy.Extension.MCP` under `<dnSpy-Install>\bin\Extensions\` and put the DLL inside.
-5. Restart dnSpy.
+2. Rename to `dnSpy.Extension.MCP.x.dll` (the `.x` suffix is required by dnSpy's extension loader).
+3. Create the folder `dnSpy.Extension.MCP` under `<dnSpy-Install>\bin\Extensions\` and put the DLL inside.
+4. Restart dnSpy.
 
 **The final path must look exactly like this** — same folder name as the DLL stem, `.x.dll` suffix present, one level deep under `Extensions\`:
 

@@ -11,9 +11,15 @@ on:
         required: true
         type: string
 
+# Builds dnSpy from source, builds this extension, stitches the extension into
+# the standard bin/Extensions/dnSpy.Extension.MCP/ layout, and ships:
+#   * three ready-to-use zips (net48, net10 self-contained win-x64, net10
+#     self-contained win-x86) — download, unzip, run dnSpy.exe, no install
+#     path to figure out;
+#   * the bare .x.dll files for users who already have dnSpy installed.
 jobs:
-  build-release:
-    name: Build Release
+  release:
+    name: Build and package release
     runs-on: windows-latest
     permissions:
       contents: write
@@ -24,105 +30,80 @@ jobs:
         with:
           path: dnSpy.Extension.MCP
 
-      - name: Checkout dnSpy (parent repository)
+      - name: Checkout dnSpy
         uses: actions/checkout@v4
         with:
           repository: dnSpyEx/dnSpy
           path: dnSpy
-          submodules: true
+          submodules: recursive
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: |
-            8.0.x
-            6.0.x
+            10.0.x
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Move extension to correct location
+      - name: Move extension to Extensions subdir
+        shell: pwsh
+        run: Move-Item -Path dnSpy.Extension.MCP -Destination dnSpy\Extensions\dnSpy.Extension.MCP -Force
+
+      # build.ps1 orchestrates: net48 build, net10 framework-dependent build,
+      # and both win-x86 / win-x64 self-contained publishes, each with the
+      # AppHostPatcher step. This is the same script used for official dnSpy
+      # releases.
+      - name: Build dnSpy (all TFMs + self-contained x86/x64)
+        shell: pwsh
+        working-directory: dnSpy
+        run: .\build.ps1
+
+      # The MCP extension is not part of dnSpy.sln, so build.ps1 does not build
+      # it. Build it directly against the freshly-built Contracts DLLs.
+      - name: Build MCP extension (both TFMs)
+        shell: pwsh
+        working-directory: dnSpy\Extensions\dnSpy.Extension.MCP
+        run: dotnet build -c Release
+
+      - name: Bundle dnSpy + extension per TFM
         shell: pwsh
         run: |
-          Move-Item -Path dnSpy.Extension.MCP -Destination dnSpy\Extensions\dnSpy.Extension.MCP -Force
+          $ErrorActionPreference = 'Stop'
 
-      - name: Restore dnSpy dependencies
-        shell: pwsh
-        run: |
-          cd dnSpy
-          dotnet restore dnSpy.sln
+          $releaseRoot = "dnSpy\dnSpy\bin\Release"
+          $extNet48 = "dnSpy\Extensions\dnSpy.Extension.MCP\bin\Release\net48\dnSpy.Extension.MCP.x.dll"
+          $extNet10 = "dnSpy\Extensions\dnSpy.Extension.MCP\bin\Release\net10.0-windows\dnSpy.Extension.MCP.x.dll"
 
-      - name: Build extension (net48)
-        shell: pwsh
-        run: |
-          cd dnSpy\Extensions\dnSpy.Extension.MCP
-          dotnet build -c Release -f net48
+          # Bundle descriptors: (source layout to zip, extension DLL that matches it)
+          $bundles = @(
+              @{ name = "net48";       src = "$releaseRoot\net48";                         dll = $extNet48 },
+              @{ name = "win-x64";     src = "$releaseRoot\net10.0-windows\win-x64\publish"; dll = $extNet10 },
+              @{ name = "win-x86";     src = "$releaseRoot\net10.0-windows\win-x86\publish"; dll = $extNet10 }
+          )
 
-      - name: Build extension (net8.0-windows)
-        shell: pwsh
-        run: |
-          cd dnSpy\Extensions\dnSpy.Extension.MCP
-          dotnet build -c Release -f net8.0-windows
+          New-Item -ItemType Directory -Force -Path release | Out-Null
 
-      - name: Prepare release files
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path release -Force
+          foreach ($b in $bundles) {
+              if (-not (Test-Path $b.src)) {
+                  throw "Expected dnSpy build output at $($b.src) but it does not exist"
+              }
 
-          # Copy net48 DLL
-          Copy-Item -Path dnSpy\Extensions\dnSpy.Extension.MCP\bin\Release\net48\dnSpy.Extension.MCP.x.dll `
-                    -Destination release\dnSpy.Extension.MCP-net48.dll
+              # dnSpy expects extensions under <bin>/Extensions/<name>/<name>.x.dll
+              $destDir = Join-Path $b.src "bin\Extensions\dnSpy.Extension.MCP"
+              New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+              Copy-Item -Path $b.dll -Destination $destDir
 
-          # Copy net8.0 DLL
-          Copy-Item -Path dnSpy\Extensions\dnSpy.Extension.MCP\bin\Release\net8.0-windows\dnSpy.Extension.MCP.x.dll `
-                    -Destination release\dnSpy.Extension.MCP-net8.0.dll
+              $zip = "release\dnSpy-MCP-$($b.name).zip"
+              Compress-Archive -Path "$($b.src)\*" -DestinationPath $zip -Force
+              Write-Host "Built $zip ($([math]::Round((Get-Item $zip).Length / 1MB, 1)) MB)"
+          }
 
-          # Create README
-          @"
-          # dnSpy MCP Extension
+          # Also ship the bare DLLs for users who already have dnSpy installed.
+          Copy-Item $extNet48 "release\dnSpy.Extension.MCP-net48.dll"
+          Copy-Item $extNet10 "release\dnSpy.Extension.MCP-net10.0-windows.dll"
 
-          Model Context Protocol (MCP) extension for dnSpyEx that exposes assembly analysis tools to AI assistants.
-
-          ## Installation
-
-          1. Download the appropriate DLL for your dnSpyEx version:
-             - **net48**: For dnSpyEx .NET Framework 4.8 version
-             - **net8.0**: For dnSpyEx .NET 8.0 version
-
-          2. Rename the downloaded file to ``dnSpy.Extension.MCP.x.dll``
-
-          3. Copy to your dnSpyEx extensions folder:
-             - Windows: ``<dnSpy-Path>\bin\Extensions\dnSpy.Extension.MCP\``
-
-          4. Restart dnSpyEx
-
-          ## Features
-
-          - **10 MCP Tools** for assembly analysis (list assemblies, get type info, decompile methods, etc.)
-          - **6 MCP Resources** with comprehensive BepInEx plugin development documentation
-          - HTTP server on port 3000 (configurable)
-          - JSON-RPC 2.0 protocol support
-
-          ## Configuration
-
-          Settings can be configured in dnSpyEx:
-          - Edit > Settings > MCP Server
-          - Enable/disable server
-          - Change port number
-
-          ## Documentation
-
-          For more information, visit the [repository](https://github.com/KernelErr/dnSpy.Extension.MCP)
-          "@ | Out-File -FilePath release\README.md -Encoding UTF8
-
-          # Display built files
-          Write-Host "Release files:"
-          Get-ChildItem release | Format-Table Name, Length
-
-      - name: Create release archive
-        shell: pwsh
-        run: |
-          Compress-Archive -Path release\* -DestinationPath dnSpy.Extension.MCP-release.zip
+          Get-ChildItem release | Format-Table Name, @{Name='SizeMB';Expression={[math]::Round($_.Length/1MB,1)}}
 
       - name: Get tag name
         id: get_tag
@@ -144,10 +125,32 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+          body: |
+            ## Download
+
+            Three ready-to-run bundles — download, unzip, launch `dnSpy.exe`.
+            The MCP extension is already placed in the correct folder inside
+            each bundle, so no install-path fiddling is needed.
+
+            | File | Contents | Runtime requirement |
+            |------|----------|---------------------|
+            | `dnSpy-MCP-net48.zip` | dnSpy .NET Framework 4.8 build + MCP extension | .NET Framework 4.8 (included with Windows 10+) |
+            | `dnSpy-MCP-win-x64.zip` | dnSpy .NET 10 self-contained x64 + MCP extension | None — runtime is bundled |
+            | `dnSpy-MCP-win-x86.zip` | dnSpy .NET 10 self-contained x86 + MCP extension | None — runtime is bundled |
+
+            For advanced users who already have dnSpy installed and only want
+            the plugin, grab the raw DLL instead:
+
+            - `dnSpy.Extension.MCP-net48.dll` (for .NET Framework 4.8 dnSpy)
+            - `dnSpy.Extension.MCP-net10.0-windows.dll` (for .NET 10 dnSpy)
+
+            Rename to `dnSpy.Extension.MCP.x.dll` and place under
+            `<dnSpy>\bin\Extensions\dnSpy.Extension.MCP\`.
           files: |
-            dnSpy.Extension.MCP-release.zip
+            release/dnSpy-MCP-net48.zip
+            release/dnSpy-MCP-win-x64.zip
+            release/dnSpy-MCP-win-x86.zip
             release/dnSpy.Extension.MCP-net48.dll
-            release/dnSpy.Extension.MCP-net8.0.dll
-            release/README.md
+            release/dnSpy.Extension.MCP-net10.0-windows.dll
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

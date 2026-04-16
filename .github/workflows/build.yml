@@ -30,40 +30,30 @@ jobs:
         with:
           repository: dnSpyEx/dnSpy
           path: dnSpy
-          submodules: true
+          submodules: recursive
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: |
-            8.0.x
-            6.0.x
+            10.0.x
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Move extension to correct location
+      - name: Move extension to Extensions subdir
         shell: pwsh
-        run: |
-          Move-Item -Path dnSpy.Extension.MCP -Destination dnSpy\Extensions\dnSpy.Extension.MCP -Force
-
-      - name: Restore dnSpy dependencies
-        shell: pwsh
-        run: |
-          cd dnSpy
-          dotnet restore dnSpy.sln
+        run: Move-Item -Path dnSpy.Extension.MCP -Destination dnSpy\Extensions\dnSpy.Extension.MCP -Force
 
       - name: Build extension (net48)
         shell: pwsh
-        run: |
-          cd dnSpy\Extensions\dnSpy.Extension.MCP
-          dotnet build -c ${{ matrix.configuration }} -f net48
+        working-directory: dnSpy\Extensions\dnSpy.Extension.MCP
+        run: dotnet build -c ${{ matrix.configuration }} -f net48
 
-      - name: Build extension (net8.0-windows)
+      - name: Build extension (net10.0-windows)
         shell: pwsh
-        run: |
-          cd dnSpy\Extensions\dnSpy.Extension.MCP
-          dotnet build -c ${{ matrix.configuration }} -f net8.0-windows
+        working-directory: dnSpy\Extensions\dnSpy.Extension.MCP
+        run: dotnet build -c ${{ matrix.configuration }} -f net10.0-windows
 
       - name: Upload net48 artifact
         if: matrix.configuration == 'Release'
@@ -73,12 +63,12 @@ jobs:
           path: dnSpy/Extensions/dnSpy.Extension.MCP/bin/Release/net48/dnSpy.Extension.MCP.x.dll
           if-no-files-found: error
 
-      - name: Upload net8.0 artifact
+      - name: Upload net10.0-windows artifact
         if: matrix.configuration == 'Release'
         uses: actions/upload-artifact@v4
         with:
-          name: dnSpy.Extension.MCP-net8.0
-          path: dnSpy/Extensions/dnSpy.Extension.MCP/bin/Release/net8.0-windows/dnSpy.Extension.MCP.x.dll
+          name: dnSpy.Extension.MCP-net10.0-windows
+          path: dnSpy/Extensions/dnSpy.Extension.MCP/bin/Release/net10.0-windows/dnSpy.Extension.MCP.x.dll
           if-no-files-found: error
 
   build-status:
