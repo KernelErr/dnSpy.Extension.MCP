@@ -1,34 +1,43 @@
 name: Release
 
+# Runs when you publish a GitHub release (or dispatch manually against an
+# existing release tag). Build artifacts are attached to the release you
+# created — this workflow never touches the release body, name, or flags.
 on:
-  push:
-    tags:
-      - "v*.*.*"
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "Release tag (e.g., v1.0.0)"
+        description: "Existing release tag to attach artifacts to (e.g., v0.1.2)"
         required: true
         type: string
 
-# Builds dnSpy from source, builds this extension, stitches the extension into
-# the standard bin/Extensions/dnSpy.Extension.MCP/ layout, and ships:
-#   * three ready-to-use zips (net48, net10 self-contained win-x64, net10
-#     self-contained win-x86) — download, unzip, run dnSpy.exe, no install
-#     path to figure out;
-#   * the bare .x.dll files for users who already have dnSpy installed.
 jobs:
   release:
-    name: Build and package release
+    name: Build and attach artifacts
     runs-on: windows-latest
     permissions:
       contents: write
 
     steps:
-      - name: Checkout MCP Extension
+      - name: Determine tag
+        id: tag
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ inputs.tag_name }}"
+          } else {
+            $tag = "${{ github.event.release.tag_name }}"
+          }
+          echo "name=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "Target tag: $tag"
+
+      - name: Checkout MCP Extension at tag
         uses: actions/checkout@v4
         with:
           path: dnSpy.Extension.MCP
+          ref: ${{ steps.tag.outputs.name }}
 
       - name: Checkout dnSpy
         uses: actions/checkout@v4
@@ -43,21 +52,35 @@ jobs:
           dotnet-version: |
             10.0.x
 
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
-
       - name: Move extension to Extensions subdir
         shell: pwsh
         run: Move-Item -Path dnSpy.Extension.MCP -Destination dnSpy\Extensions\dnSpy.Extension.MCP -Force
 
       # build.ps1 orchestrates: net48 build, net10 framework-dependent build,
       # and both win-x86 / win-x64 self-contained publishes, each with the
-      # AppHostPatcher step. This is the same script used for official dnSpy
-      # releases.
+      # AppHostPatcher step — same script used for official dnSpy releases.
+      #
+      # -NoMsbuild makes it use `dotnet build` (from the SDK set up above)
+      # instead of msbuild. The windows-latest runner's pre-installed msbuild
+      # doesn't always have .NET 10 targeting packs registered; the extension
+      # and dnSpy paths we need do not use COM references, so dotnet build
+      # suffices.
       - name: Build dnSpy (all TFMs + self-contained x86/x64)
         shell: pwsh
         working-directory: dnSpy
-        run: .\build.ps1
+        run: .\build.ps1 -NoMsbuild
+
+      - name: List dnSpy build output (diagnostic)
+        if: always()
+        shell: pwsh
+        run: |
+          $root = "dnSpy\dnSpy\bin\Release"
+          if (Test-Path $root) {
+            Get-ChildItem $root -Recurse -Depth 2 -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty FullName
+          } else {
+            Write-Host "No $root directory — the dnSpy build produced nothing."
+          }
 
       # The MCP extension is not part of dnSpy.sln, so build.ps1 does not build
       # it. Build it directly against the freshly-built Contracts DLLs.
@@ -75,11 +98,11 @@ jobs:
           $extNet48 = "dnSpy\Extensions\dnSpy.Extension.MCP\bin\Release\net48\dnSpy.Extension.MCP.x.dll"
           $extNet10 = "dnSpy\Extensions\dnSpy.Extension.MCP\bin\Release\net10.0-windows\dnSpy.Extension.MCP.x.dll"
 
-          # Bundle descriptors: (source layout to zip, extension DLL that matches it)
+          # Bundle descriptors: (zip suffix, dnSpy deployment root, matching extension DLL)
           $bundles = @(
-              @{ name = "net48";       src = "$releaseRoot\net48";                         dll = $extNet48 },
-              @{ name = "win-x64";     src = "$releaseRoot\net10.0-windows\win-x64\publish"; dll = $extNet10 },
-              @{ name = "win-x86";     src = "$releaseRoot\net10.0-windows\win-x86\publish"; dll = $extNet10 }
+              @{ name = "net48";   src = "$releaseRoot\net48";                           dll = $extNet48 },
+              @{ name = "win-x64"; src = "$releaseRoot\net10.0-windows\win-x64\publish"; dll = $extNet10 },
+              @{ name = "win-x86"; src = "$releaseRoot\net10.0-windows\win-x86\publish"; dll = $extNet10 }
           )
 
           New-Item -ItemType Directory -Force -Path release | Out-Null
@@ -105,47 +128,14 @@ jobs:
 
           Get-ChildItem release | Format-Table Name, @{Name='SizeMB';Expression={[math]::Round($_.Length/1MB,1)}}
 
-      - name: Get tag name
-        id: get_tag
-        shell: pwsh
-        run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $tag = "${{ inputs.tag_name }}"
-          } else {
-            $tag = "${{ github.ref }}".Replace("refs/tags/", "")
-          }
-          echo "tag=$tag" >> $env:GITHUB_OUTPUT
-          echo "Release tag: $tag"
-
-      - name: Create GitHub Release
+      # Attach artifacts to the already-created release. We do NOT set body,
+      # body_path, name, draft, prerelease, or generate_release_notes — leaving
+      # those unset makes action-gh-release preserve the release metadata you
+      # wrote by hand.
+      - name: Attach artifacts to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.get_tag.outputs.tag }}
-          name: Release ${{ steps.get_tag.outputs.tag }}
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-          body: |
-            ## Download
-
-            Three ready-to-run bundles — download, unzip, launch `dnSpy.exe`.
-            The MCP extension is already placed in the correct folder inside
-            each bundle, so no install-path fiddling is needed.
-
-            | File | Contents | Runtime requirement |
-            |------|----------|---------------------|
-            | `dnSpy-MCP-net48.zip` | dnSpy .NET Framework 4.8 build + MCP extension | .NET Framework 4.8 (included with Windows 10+) |
-            | `dnSpy-MCP-win-x64.zip` | dnSpy .NET 10 self-contained x64 + MCP extension | None — runtime is bundled |
-            | `dnSpy-MCP-win-x86.zip` | dnSpy .NET 10 self-contained x86 + MCP extension | None — runtime is bundled |
-
-            For advanced users who already have dnSpy installed and only want
-            the plugin, grab the raw DLL instead:
-
-            - `dnSpy.Extension.MCP-net48.dll` (for .NET Framework 4.8 dnSpy)
-            - `dnSpy.Extension.MCP-net10.0-windows.dll` (for .NET 10 dnSpy)
-
-            Rename to `dnSpy.Extension.MCP.x.dll` and place under
-            `<dnSpy>\bin\Extensions\dnSpy.Extension.MCP\`.
+          tag_name: ${{ steps.tag.outputs.name }}
           files: |
             release/dnSpy-MCP-net48.zip
             release/dnSpy-MCP-win-x64.zip
