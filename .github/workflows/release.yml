@@ -74,7 +74,7 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $root = "dnSpy\dnSpy\bin\Release"
+          $root = "dnSpy\dnSpy\dnSpy\bin\Release"
           if (Test-Path $root) {
             Get-ChildItem $root -Recurse -Depth 2 -ErrorAction SilentlyContinue |
               Select-Object -ExpandProperty FullName
@@ -94,7 +94,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $releaseRoot = "dnSpy\dnSpy\bin\Release"
+          $releaseRoot = "dnSpy\dnSpy\dnSpy\bin\Release"
           $extNet48 = "dnSpy\Extensions\dnSpy.Extension.MCP\bin\Release\net48\dnSpy.Extension.MCP.x.dll"
           $extNet10 = "dnSpy\Extensions\dnSpy.Extension.MCP\bin\Release\net10.0-windows\dnSpy.Extension.MCP.x.dll"
 
