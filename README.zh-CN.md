@@ -109,11 +109,47 @@ cp bin/Release/net10.0-windows/dnSpy.Extension.MCP.x.dll \
 
 ## 传输协议
 
-两种传输使用同一个 `HttpListener`、同一端口。
+三种传输共用同一个 `HttpListener` 与同一端口。服务器根据请求的路径、HTTP 方法与 `Accept` 头自动选择对应的处理逻辑。
+
+### Streamable HTTP（MCP 2025-03-26）
+
+单端点传输，codex 等新版 MCP 客户端使用。客户端在 POST 时携带 `Accept: application/json, text/event-stream`；服务器在 `initialize` 响应的 `Mcp-Session-Id` 头中分配会话 ID，后续请求需回传该头。同一端点的 `GET` 用于服务端主动推送（SSE），`DELETE` 用于显式结束会话。
+
+路径 `/` 与 `/mcp` 均可作为端点。
+
+```bash
+# 1. 初始化 —— 服务器在 Mcp-Session-Id 响应头中返回会话 ID
+curl -i -X POST http://localhost:3000/ \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}'
+# HTTP/1.1 200 OK
+# Mcp-Session-Id: <sid>
+# Content-Type: application/json
+# {"jsonrpc":"2.0","id":1,"result":{...}}
+
+# 2. 后续请求需回传会话头
+curl -X POST http://localhost:3000/ \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -H "Mcp-Session-Id: <sid>" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+
+# 3. 可选：显式结束会话（服务器关闭时也会清理）
+curl -X DELETE http://localhost:3000/ -H "Mcp-Session-Id: <sid>"
+```
+
+codex `~/.codex/config.toml`：
+
+```toml
+[mcp_servers.dnspy-mcp]
+type = "streamable-http"
+url = "http://localhost:3000"
+```
 
 ### 普通 HTTP JSON-RPC
 
-一次性请求/响应：向 `/` POST 一个 JSON-RPC 消息，从同一 HTTP 响应体读取结果。
+一次性请求/响应：向 `/` POST 一个 JSON-RPC 消息（`Accept` 头**不包含** `text/event-stream`），从同一 HTTP 响应体读取结果。适合 `curl` 调试或只会说纯 HTTP 的客户端。
 
 ```bash
 curl -s http://localhost:3000/health
@@ -124,9 +160,9 @@ curl -s -X POST http://localhost:3000/ \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}'
 ```
 
-### Server-Sent Events（MCP 2024-11-05）
+### Server-Sent Events（MCP 2024-11-05，遗留）
 
-双端点传输：一条长连接 SSE 流 + 一个用于客户端消息的 POST 端点。
+为了兼容 MCP Inspector 与旧客户端而保留的双端点传输：一条长连接 SSE 流 + 一个用于客户端消息的 POST 端点。
 
 1. `GET /sse` — 打开 `text/event-stream`。首个事件 (`event: endpoint`) 的 `data` 字段告诉客户端应当 POST 到哪里（`/message?sessionId=<id>`）。
 2. `POST /message?sessionId=<id>` — 客户端发送 JSON-RPC 请求，服务器立即返回 `202 Accepted`，真正的 JSON-RPC 响应作为 `event: message` 写回对应的 SSE 流。

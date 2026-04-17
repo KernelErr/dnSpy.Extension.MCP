@@ -109,11 +109,47 @@ Settings live under **Edit → Settings → MCP Server**:
 
 ## Transports
 
-Both transports run on the same `HttpListener` on the same port.
+All three transports run on the same `HttpListener` on the same port. The server picks the right one by inspecting the path, HTTP method, and `Accept` header of each request.
+
+### Streamable HTTP (MCP 2025-03-26)
+
+Single-endpoint transport used by codex and other modern MCP clients. The client POSTs JSON-RPC requests with `Accept: application/json, text/event-stream`; the server returns the JSON-RPC response inline as `application/json` and allocates a session on `initialize` via the `Mcp-Session-Id` response header. Subsequent POSTs must echo that header. The server also honours `GET` on the same endpoint for server-initiated SSE and `DELETE` for teardown.
+
+Both `/` and `/mcp` are accepted as the endpoint path.
+
+```bash
+# 1. Initialize — server returns the session ID in the Mcp-Session-Id header.
+curl -i -X POST http://localhost:3000/ \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}'
+# HTTP/1.1 200 OK
+# Mcp-Session-Id: <sid>
+# Content-Type: application/json
+# {"jsonrpc":"2.0","id":1,"result":{...}}
+
+# 2. Subsequent calls echo the session header.
+curl -X POST http://localhost:3000/ \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -H "Mcp-Session-Id: <sid>" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+
+# 3. Tear down explicitly (optional — the server also drops the session on shutdown).
+curl -X DELETE http://localhost:3000/ -H "Mcp-Session-Id: <sid>"
+```
+
+Codex `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.dnspy-mcp]
+type = "streamable-http"
+url = "http://localhost:3000"
+```
 
 ### Plain HTTP JSON-RPC
 
-One-shot request/response — POST JSON-RPC to `/` and read the response from the same HTTP response body.
+One-shot request/response — POST JSON-RPC to `/` without `text/event-stream` in `Accept` and read the response from the same HTTP response body. Useful for quick `curl` testing and for MCP clients that only speak plain HTTP.
 
 ```bash
 curl -s http://localhost:3000/health
@@ -126,7 +162,7 @@ curl -s -X POST http://localhost:3000/ \
 
 ### Server-Sent Events (MCP 2024-11-05)
 
-Two-endpoint transport: a long-lived SSE stream, plus a POST endpoint for client messages.
+Legacy two-endpoint transport kept for backwards compatibility with MCP Inspector and older clients: a long-lived SSE stream, plus a POST endpoint for client messages.
 
 1. `GET /sse` — opens `text/event-stream`. The first event (`event: endpoint`) carries the URL the client should POST to (`/message?sessionId=<id>`).
 2. `POST /message?sessionId=<id>` — accepts a JSON-RPC request, returns `202 Accepted`, and writes the real JSON-RPC response onto the corresponding SSE stream as an `event: message`.
