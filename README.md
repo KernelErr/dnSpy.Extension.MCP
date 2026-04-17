@@ -11,7 +11,8 @@ Chinese / 中文说明: see [README.zh-CN.md](README.zh-CN.md).
 
 ### MCP Tools (15 total)
 
-**Analysis & navigation**
+#### Analysis & navigation
+
 1. **list_assemblies** — list all loaded assemblies with metadata
 2. **get_assembly_info** — detailed info about a specific assembly (paginated namespaces)
 3. **list_types** — all types in an assembly or namespace (paginated)
@@ -23,14 +24,16 @@ Chinese / 中文说明: see [README.zh-CN.md](README.zh-CN.md).
 9. **find_path_to_type** — BFS over fields/properties to connect two types
 10. **decompile_method** — decompile a method to C# (accepts `parameter_types` / `method_token` to disambiguate overloads)
 
-**IL viewing & editing** (new in 0.1.3)
-11. **get_method_il** — instructions (index, offset, opcode, operand) + locals + exception handlers + body flags
-12. **patch_method_il** — ordered `replace` / `insert` / `delete` / `set_init_locals` edits; snapshot-on-first-patch
-13. **revert_method_il** — restore the pre-patch body shape
-14. **save_assembly** — write the module to disk (timestamped backup on overwrite, `NativeWrite` preserves native stubs / Win32 resources / delay-loaded imports, GAC refused)
+#### IL viewing & editing (new in 0.1.3)
 
-**Codegen**
-15. **generate_bepinex_plugin** — BepInEx plugin template with Harmony hooks
+1. **get_method_il** — instructions (index, offset, opcode, operand) + locals + exception handlers + body flags
+2. **patch_method_il** — ordered `replace` / `insert` / `delete` / `set_init_locals` edits; snapshot-on-first-patch
+3. **revert_method_il** — restore the pre-patch body shape
+4. **save_assembly** — write the module to disk (timestamped backup on overwrite, `NativeWrite` preserves native stubs / Win32 resources / delay-loaded imports, GAC refused)
+
+#### Codegen
+
+1. **generate_bepinex_plugin** — BepInEx plugin template with Harmony hooks
 
 ### MCP Resources (6 total)
 
