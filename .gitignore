@@ -42,6 +42,12 @@ packages/
 *.pdb
 !dnSpy.Extension.MCP.x.dll
 
+# Fixture artifacts produced by tests/fixtures/run-tests.ps1
+tests/fixtures/bin/
+tests/fixtures/obj/
+tests/fixtures/*.bak
+tests/fixtures/TestIL.dll.*.bak
+
 # OS files
 Thumbs.db
 .DS_Store
