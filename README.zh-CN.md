@@ -11,7 +11,8 @@ English: see [README.md](README.md).
 
 ### MCP 工具（共 15 个）
 
-**分析与导航**
+#### 分析与导航
+
 1. **list_assemblies** — 列出所有已加载的程序集及其元数据
 2. **get_assembly_info** — 查看指定程序集的详细信息（命名空间分页）
 3. **list_types** — 列出程序集或命名空间下的所有类型（分页）
@@ -23,14 +24,16 @@ English: see [README.md](README.md).
 9. **find_path_to_type** — 基于字段/属性对两个类型做 BFS 路径搜索
 10. **decompile_method** — 将方法反编译为 C#（可通过 `parameter_types` / `method_token` 精确区分重载）
 
-**IL 查看与编辑**（0.1.3 新增）
-11. **get_method_il** — 方法 IL 指令（index、offset、opcode、operand）+ 局部变量 + 异常处理块 + 方法体标志
-12. **patch_method_il** — 按序执行 `replace` / `insert` / `delete` / `set_init_locals` 编辑；首次补丁会自动快照
-13. **revert_method_il** — 回滚到补丁前的方法体
-14. **save_assembly** — 将模块写回磁盘（覆盖原文件时会自动生成带时间戳的备份，`NativeWrite` 保留本机 stub / Win32 资源 / 延迟加载导入，GAC 路径被拒绝）
+#### IL 查看与编辑（0.1.3 新增）
 
-**代码生成**
-15. **generate_bepinex_plugin** — 生成带 Harmony 钩子的 BepInEx 插件模板
+1. **get_method_il** — 方法 IL 指令（index、offset、opcode、operand）+ 局部变量 + 异常处理块 + 方法体标志
+2. **patch_method_il** — 按序执行 `replace` / `insert` / `delete` / `set_init_locals` 编辑；首次补丁会自动快照
+3. **revert_method_il** — 回滚到补丁前的方法体
+4. **save_assembly** — 将模块写回磁盘（覆盖原文件时会自动生成带时间戳的备份，`NativeWrite` 保留本机 stub / Win32 资源 / 延迟加载导入，GAC 路径被拒绝）
+
+#### 代码生成
+
+1. **generate_bepinex_plugin** — 生成带 Harmony 钩子的 BepInEx 插件模板
 
 ### MCP 资源（共 6 个）
 
