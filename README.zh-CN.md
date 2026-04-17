@@ -3,24 +3,34 @@
 [![Build](https://github.com/KernelErr/dnSpy.Extension.MCP/actions/workflows/build.yml/badge.svg)](https://github.com/KernelErr/dnSpy.Extension.MCP/actions/workflows/build.yml)
 [![Release](https://github.com/KernelErr/dnSpy.Extension.MCP/actions/workflows/release.yml/badge.svg)](https://github.com/KernelErr/dnSpy.Extension.MCP/actions/workflows/release.yml)
 
-一个用于 [dnSpyEx](https://github.com/dnSpyEx/dnSpy) 的 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 扩展，向 Claude 等 AI 助手暴露 .NET 程序集分析能力。
+一个用于 [dnSpyEx](https://github.com/dnSpyEx/dnSpy) 的 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 扩展，向 Claude 等 AI 助手暴露 .NET 程序集的**分析能力**与 **IL 编辑能力**。
 
 English: see [README.md](README.md).
 
 ## 功能
 
-### MCP 工具（共 10 个）
+### MCP 工具（共 15 个）
 
+**分析与导航**
 1. **list_assemblies** — 列出所有已加载的程序集及其元数据
 2. **get_assembly_info** — 查看指定程序集的详细信息（命名空间分页）
 3. **list_types** — 列出程序集或命名空间下的所有类型（分页）
-4. **get_type_info** — 获取类型的字段、属性及分页的方法
-5. **get_type_fields** — 按通配符匹配类型的字段（如 `*Bonus*`）
-6. **get_type_property** — 获取属性的详细信息，包含 get/set 访问器
-7. **find_path_to_type** — 基于字段/属性对两个类型做 BFS 路径搜索
-8. **decompile_method** — 将方法反编译为 C#
-9. **search_types** — 跨程序集按通配符或子串搜索类型
-10. **generate_bepinex_plugin** — 生成带 Harmony 钩子的 BepInEx 插件模板
+4. **get_type_info** — 获取类型的字段、属性及分页的方法（方法条目含 `token` / `MDToken`，用于无歧义定位）
+5. **list_methods** — 列出类型的全部方法，每条含 `token` 与 `parameter_types`，分页
+6. **get_type_fields** — 按通配符匹配类型的字段（如 `*Bonus*`）
+7. **get_type_property** — 获取属性的详细信息，包含 get/set 访问器
+8. **search_types** — 跨程序集按通配符或子串搜索类型
+9. **find_path_to_type** — 基于字段/属性对两个类型做 BFS 路径搜索
+10. **decompile_method** — 将方法反编译为 C#（可通过 `parameter_types` / `method_token` 精确区分重载）
+
+**IL 查看与编辑**（0.1.3 新增）
+11. **get_method_il** — 方法 IL 指令（index、offset、opcode、operand）+ 局部变量 + 异常处理块 + 方法体标志
+12. **patch_method_il** — 按序执行 `replace` / `insert` / `delete` / `set_init_locals` 编辑；首次补丁会自动快照
+13. **revert_method_il** — 回滚到补丁前的方法体
+14. **save_assembly** — 将模块写回磁盘（覆盖原文件时会自动生成带时间戳的备份，`NativeWrite` 保留本机 stub / Win32 资源 / 延迟加载导入，GAC 路径被拒绝）
+
+**代码生成**
+15. **generate_bepinex_plugin** — 生成带 Harmony 钩子的 BepInEx 插件模板
 
 ### MCP 资源（共 6 个）
 
@@ -34,6 +44,72 @@ English: see [README.md](README.md).
 6. **mono-vs-il2cpp** — Mono 与 IL2CPP 对比及迁移
 
 所有文档都内嵌在 DLL 中，**离线可用**。
+
+## IL 查看与编辑
+
+AI 客户端可以像使用 dnSpy "编辑方法实体" 对话框一样读取、修改、保存字节码。
+
+### 操作数语法（带标签前缀）
+
+每条指令的操作数都是一个带标签的字符串；`get_method_il`（读）与 `patch_method_il`（写）共用同一套语法，因此操作数可以无损往返。
+
+| 标签 | 示例 | 对应指令 |
+|------|------|----------|
+| `int:` / `int8:` / `uint8:` / `long:` | `int:42` | `ldc.i4`、`ldc.i4.s`、`ldc.i8` |
+| `float:` / `double:` | `double:3.14` | `ldc.r4`、`ldc.r8` |
+| `str:` *(JSON 字符串字面量)* | `str:"hello\n"` | `ldstr` |
+| `method:` *(dnlib FullName)* | `method:System.Void Ns.T::M(System.Int32)` | `call`、`callvirt`、`newobj`、`ldftn`、`ldvirtftn`、`jmp` |
+| `field:` | `field:System.Int32 Ns.T::F` | `ldfld`、`stfld`、`ldsfld`、`stsfld`、`ldflda`、`ldsflda` |
+| `type:` | `type:System.String` | `castclass`、`isinst`、`box`、`unbox`、`newarr`、`initobj`、`ldelem*`、`stelem*` 等 |
+| `token:method:…` / `token:field:…` / `token:type:…` | `token:type:System.String` | `ldtoken` |
+| `label:<idx>` | `label:7` | `br`、`brtrue.s`、`blt` 等跳转 |
+| `switch:[<i>,<i>,…]` | `switch:[3,7,12]` | `switch` |
+| `local:<idx>` | `local:0` | `ldloc*`、`stloc*` |
+| `arg:<idx>` | `arg:1` | `ldarg*`、`starg*` |
+| *(空字符串)* | `""` | 无操作数（`ldarg.0`、`add`、`ret` 等） |
+
+`calli` / `InlineSig` 在 0.1.3 中暂不支持。
+
+### 端到端示例：修改常量并落盘
+
+假设 `TestIL.dll` 中有 `public static int AddOne(int x) => x + 1;`。
+
+```bash
+# 1. 定位方法（parameter_types 可用于区分重载）
+curl -s -X POST http://localhost:3000/ -H "Content-Type: application/json" -d '{
+  "jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+    "name":"list_methods",
+    "arguments":{"assembly_name":"TestIL","type_full_name":"TestIL.Simple"}}}'
+
+# 2. 读取 IL
+curl -s -X POST http://localhost:3000/ -H "Content-Type: application/json" -d '{
+  "jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+    "name":"get_method_il",
+    "arguments":{"assembly_name":"TestIL","type_full_name":"TestIL.Simple","method_name":"AddOne"}}}'
+# 返回的 instructions 里会有：{"index":1,"opcode":"ldc.i4.1","operand":""}
+
+# 3. 把 +1 改成 +41
+curl -s -X POST http://localhost:3000/ -H "Content-Type: application/json" -d '{
+  "jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+    "name":"patch_method_il",
+    "arguments":{"assembly_name":"TestIL","type_full_name":"TestIL.Simple","method_name":"AddOne",
+      "edits":[{"op":"replace","index":1,"opcode":"ldc.i4","operand":"int:41"}]}}}'
+
+# 4. 保存。覆盖原文件前会先生成 <path>.<yyyyMMdd-HHmmss>.bak 备份
+curl -s -X POST http://localhost:3000/ -H "Content-Type: application/json" -d '{
+  "jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+    "name":"save_assembly",
+    "arguments":{"assembly_name":"TestIL"}}}'
+```
+
+重新加载保存后的 DLL，`AddOne(10)` 将返回 **`51`**，而不是原本的 **`11`**。
+
+### 注意事项
+
+- **没有 Ctrl+Z**。`patch_method_il` 不走 dnSpy 的撤销栈，想回退请用 `revert_method_il` — 每个方法在第一次被补丁时自动建立快照，revert 后或一次成功 save 后快照会被清理。
+- **保存后 dnSpy 的内存视图不会自动刷新**。要在当前 dnSpy 窗口里看到落盘后的状态，需要重新打开该程序集。
+- **GAC 路径会被拒绝**。保存 `mscorlib` 等 GAC 程序集会返回 `-32602` 错误。
+- **仅限指令层面**。添加/删除局部变量或异常处理块不在 0.1.3 范围内；`get_method_il` 会以只读形式暴露它们。
 
 ## 安装
 
@@ -104,7 +180,7 @@ cp bin/Release/net10.0-windows/dnSpy.Extension.MCP.x.dll \
 配置入口：**编辑 → 设置 → MCP Server**
 
 - **Enable Server** — 勾选并应用即可即时启动/停止 HTTP 服务器。
-- **Port** — 首选 TCP 端口（默认 `3000`）。若端口已被占用，扩展会自动尝试 `port + 1`，最多 20 次，并在日志中记录最终绑定的端口。查看 Server Log 面板（或磁盘备用日志）以确认真实端口。
+- **Port** — 首选 TCP 端口（默认 `3000`）。若端口已被占用，扩展会自动尝试 `port + 1`，最多 20 次，并在日志中记录最终绑定的端口。查看 Server Log 面板确认实际端口。
 - **Host** — 绑定地址（默认 `localhost`）。
 
 ## 传输协议
@@ -183,7 +259,34 @@ curl -X POST "http://localhost:3000/message?sessionId=<sessionId>" \
 # HTTP 202 Accepted — 实际响应出现在终端 A 的 SSE 流里
 ```
 
-### Claude Desktop 配置
+### 客户端配置
+
+#### Claude Code
+
+命令行一键注册（自动走根路径下的 Streamable HTTP 传输）：
+
+```bash
+claude mcp add --transport http dnspy http://localhost:3000
+# 验证是否注册成功：
+claude mcp list
+```
+
+或在项目根目录写入 `.mcp.json`（把配置跟项目一起提交）：
+
+```json
+{
+  "mcpServers": {
+    "dnspy": {
+      "type": "http",
+      "url": "http://localhost:3000"
+    }
+  }
+}
+```
+
+在 Claude Code 里运行 `/mcp` 可以确认 `dnspy` 已连接，并查看它暴露的工具。
+
+#### Claude Desktop
 
 ```json
 {
@@ -195,6 +298,10 @@ curl -X POST "http://localhost:3000/message?sessionId=<sessionId>" \
   }
 }
 ```
+
+#### codex
+
+参见上文 "Streamable HTTP" 章节里的 `~/.codex/config.toml` 示例。
 
 ## 开发
 
@@ -209,23 +316,26 @@ dotnet build -c Debug -f net10.0-windows
 ```
 dnSpy.Extension.MCP/
 ├── .github/workflows/      GitHub Actions（构建与发布）
-├── McpServer.cs            HttpListener 上的 HTTP + SSE 服务器，含端口自动回退
+├── McpServer.cs            HttpListener：HTTP + SSE + Streamable HTTP + 端口自动回退
 ├── McpProtocol.cs          JSON-RPC 2.0 / MCP 数据模型
-├── McpTools.cs             10 个 MCP 工具（封装 dnSpy 服务）
-├── McpSettings.cs          设置视图模型 + 持久化 + 文件日志
+├── McpTools.cs             分析类工具 + MEF 导出 + 请求分派（sealed partial）
+├── McpTools.IL.cs          IL 查看/补丁/回滚/保存 + 操作数渲染器与解析器
+├── McpSettings.cs          设置视图模型 + 持久化 + 日志（磁盘日志仅 Debug 构建）
 ├── McpSettingsPage.cs      实现 IAppSettingsPageProvider，接入 dnSpy 设置界面
 ├── BepInExResources.cs     内嵌的 BepInEx 文档（6 份资源）
 ├── TheExtension.cs         IExtension 入口，Loaded 时启动服务器
+├── tests/fixtures/         TestIL.cs + build-fixture.ps1 + run-tests.ps1（端到端测试）
 └── dnSpy.Extension.MCP.csproj
 ```
 
 ### 架构要点
 
 - **目标框架**：`net48` 与 `net10.0-windows`（继承自 `DnSpyCommon.props`）。
-- **传输**：单个 `HttpListener` 同时承载普通 HTTP JSON-RPC 与 SSE 两条路径。**不**使用 Kestrel — dnSpy 的自包含 .NET 发布版不会捆绑 ASP.NET Core，任何对 `Microsoft.AspNetCore.*` 的引用都会让 MEF 在组合 `IExtension` 时抛出静默的 `TypeLoadException`，扩展入口因此无法实例化。
+- **传输**：单个 `HttpListener` 同时承载普通 HTTP JSON-RPC、2024-11-05 SSE、2025-03-26 Streamable HTTP 三种协议，共用同一端口。**不**使用 Kestrel — dnSpy 的自包含 .NET 发布版不会捆绑 ASP.NET Core，任何对 `Microsoft.AspNetCore.*` 的引用都会让 MEF 在组合 `IExtension` 时抛出静默的 `TypeLoadException`，扩展入口因此无法实例化。
 - **MEF**：服务使用 `[Export(typeof(T))]` + `[ImportingConstructor]`。不要手动 `new` `McpServer` / `McpSettings` / `McpTools`。
+- **UI 线程调度**：`ExecuteTool` 里所有工具处理函数都通过 WPF Dispatcher 调度执行。`IDocumentTreeView` 的节点是 `DispatcherObject`，一旦有用户加载的程序集被索引，从 HTTP 工作线程直接访问就会抛 "calling thread cannot access this object"，因此必须统一 marshal；已经显式走 UI 线程的处理函数（patch、revert、save）被二次包裹也是安全的。
 - **错误码**：工具处理函数抛 `ArgumentException` → JSON-RPC `-32602`（参数非法）；其他异常 → `-32603`（服务端错误）。
-- **日志**：`McpSettings.Log(...)` 同时写 UI 日志面板和磁盘回退文件。磁盘日志是权威来源 — 即使 WPF 派发器还没启动、或者设置对话框没打开，它也能记录。
+- **日志**：`McpSettings.Log(...)` 总会写 UI 日志面板，只在 **Debug** 构建下额外写入 `D:\dnspy-mcp.log`。Release 构建完全靠内存日志，终端用户机器无需可写 `D:` 盘。
 
 ## 协议
 
@@ -248,6 +358,8 @@ git push origin v1.0.0
 - **依赖**：`dnSpy.Contracts.DnSpy`、`dnSpy.Contracts.Logic`、`dnlib`；`System.Text.Json`（`net48` 通过 NuGet 包，`net10.0-windows` 随 BCL）。
 - **BFS 路径查找**：`find_path_to_type` 对每个类型的字段和属性做广度优先搜索。
 - **反编译**：通过 `IDecompilerService` 使用 dnSpy 默认反编译器（默认 C#）。
+- **IL 写盘**：`save_assembly` 对从磁盘加载的模块调用 `((ModuleDefMD)module).NativeWrite(path, NativeModuleWriterOptions)`（保留本机 stub、Win32 资源、延迟加载导入、混合代码）；对内存里新建的模块调用 `module.Write(path, ModuleWriterOptions)`。落盘前先通过 `peImage as dnlib.PE.IInternalPEImage` 关闭内存映射 I/O — `dnSpy.AsmEditor` 里的 `IMmapDisabler` 是 internal，因此直接内联一行调用，避免把 AsmEditor 作为依赖。
+- **跨方法引用解析**：`patch_method_il` 里 `method:` / `field:` / `type:` 操作数的解析方式是遍历所有已加载模块按 `FullName` 精确匹配，再用 `new Importer(module, ImporterOptions.TryToUseDefs)` 导入到目标模块。
 
 ## 故障排查
 

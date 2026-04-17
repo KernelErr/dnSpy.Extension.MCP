@@ -3,24 +3,34 @@
 [![Build](https://github.com/KernelErr/dnSpy.Extension.MCP/actions/workflows/build.yml/badge.svg)](https://github.com/KernelErr/dnSpy.Extension.MCP/actions/workflows/build.yml)
 [![Release](https://github.com/KernelErr/dnSpy.Extension.MCP/actions/workflows/release.yml/badge.svg)](https://github.com/KernelErr/dnSpy.Extension.MCP/actions/workflows/release.yml)
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) extension for [dnSpyEx](https://github.com/dnSpyEx/dnSpy) that exposes .NET assembly analysis tools to AI assistants like Claude.
+A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) extension for [dnSpyEx](https://github.com/dnSpyEx/dnSpy) that exposes .NET assembly **analysis** and **IL-editing** tools to AI assistants like Claude.
 
 Chinese / 中文说明: see [README.zh-CN.md](README.zh-CN.md).
 
 ## Features
 
-### MCP Tools (10 total)
+### MCP Tools (15 total)
 
+**Analysis & navigation**
 1. **list_assemblies** — list all loaded assemblies with metadata
 2. **get_assembly_info** — detailed info about a specific assembly (paginated namespaces)
 3. **list_types** — all types in an assembly or namespace (paginated)
-4. **get_type_info** — fields, properties, and paginated methods for a type
-5. **get_type_fields** — filter fields by wildcard pattern (e.g. `*Bonus*`)
-6. **get_type_property** — detailed info about a property including getter/setter
-7. **find_path_to_type** — BFS over fields/properties to connect two types
-8. **decompile_method** — decompile a method to C#
-9. **search_types** — wildcard / substring type search across all assemblies
-10. **generate_bepinex_plugin** — BepInEx plugin template with Harmony hooks
+4. **get_type_info** — fields, properties, and paginated methods for a type (methods include `token` / `MDToken` for unambiguous identification)
+5. **list_methods** — methods of a type with `token` + `parameter_types` per entry, paginated
+6. **get_type_fields** — filter fields by wildcard pattern (e.g. `*Bonus*`)
+7. **get_type_property** — detailed info about a property including getter/setter
+8. **search_types** — wildcard / substring type search across all assemblies
+9. **find_path_to_type** — BFS over fields/properties to connect two types
+10. **decompile_method** — decompile a method to C# (accepts `parameter_types` / `method_token` to disambiguate overloads)
+
+**IL viewing & editing** (new in 0.1.3)
+11. **get_method_il** — instructions (index, offset, opcode, operand) + locals + exception handlers + body flags
+12. **patch_method_il** — ordered `replace` / `insert` / `delete` / `set_init_locals` edits; snapshot-on-first-patch
+13. **revert_method_il** — restore the pre-patch body shape
+14. **save_assembly** — write the module to disk (timestamped backup on overwrite, `NativeWrite` preserves native stubs / Win32 resources / delay-loaded imports, GAC refused)
+
+**Codegen**
+15. **generate_bepinex_plugin** — BepInEx plugin template with Harmony hooks
 
 ### MCP Resources (6 total)
 
@@ -34,6 +44,72 @@ Embedded BepInEx documentation served over `resources/list` / `resources/read`:
 6. **mono-vs-il2cpp**
 
 All docs ship inside the DLL — no network required.
+
+## IL viewing and editing
+
+See, patch, and save bytecode from an AI client. Mirrors the dnSpy *Edit Method Body* dialog.
+
+### Operand grammar
+
+Each instruction's operand is a single tagged string; the same grammar is used by `get_method_il` (read) and `patch_method_il` (write), so operands round-trip unchanged.
+
+| Tag | Example | Opcodes |
+|-----|---------|---------|
+| `int:` / `int8:` / `uint8:` / `long:` | `int:42` | `ldc.i4`, `ldc.i4.s`, `ldc.i8` |
+| `float:` / `double:` | `double:3.14` | `ldc.r4`, `ldc.r8` |
+| `str:` *(JSON-quoted)* | `str:"hello\n"` | `ldstr` |
+| `method:` *(dnlib FullName)* | `method:System.Void Ns.T::M(System.Int32)` | `call`, `callvirt`, `newobj`, `ldftn`, `ldvirtftn`, `jmp` |
+| `field:` | `field:System.Int32 Ns.T::F` | `ldfld`, `stfld`, `ldsfld`, `stsfld`, `ldflda`, `ldsflda` |
+| `type:` | `type:System.String` | `castclass`, `isinst`, `box`, `unbox`, `newarr`, `initobj`, `ldelem*`, `stelem*`, … |
+| `token:method:…` / `token:field:…` / `token:type:…` | `token:type:System.String` | `ldtoken` |
+| `label:<idx>` | `label:7` | `br`, `brtrue.s`, `blt`, … |
+| `switch:[<i>,<i>,…]` | `switch:[3,7,12]` | `switch` |
+| `local:<idx>` | `local:0` | `ldloc*`, `stloc*` |
+| `arg:<idx>` | `arg:1` | `ldarg*`, `starg*` |
+| *(empty)* | `""` | no operand (`ldarg.0`, `add`, `ret`, …) |
+
+`calli` / `InlineSig` is not supported in 0.1.3.
+
+### End-to-end: patch a constant and persist
+
+Assume `TestIL.dll` contains `public static int AddOne(int x) => x + 1;`.
+
+```bash
+# 1. Find the method (parameter_types disambiguates overloads).
+curl -s -X POST http://localhost:3000/ -H "Content-Type: application/json" -d '{
+  "jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+    "name":"list_methods",
+    "arguments":{"assembly_name":"TestIL","type_full_name":"TestIL.Simple"}}}'
+
+# 2. Read the IL.
+curl -s -X POST http://localhost:3000/ -H "Content-Type: application/json" -d '{
+  "jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+    "name":"get_method_il",
+    "arguments":{"assembly_name":"TestIL","type_full_name":"TestIL.Simple","method_name":"AddOne"}}}'
+# Instructions include: {"index":1,"opcode":"ldc.i4.1","operand":""}
+
+# 3. Replace the +1 with +41.
+curl -s -X POST http://localhost:3000/ -H "Content-Type: application/json" -d '{
+  "jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+    "name":"patch_method_il",
+    "arguments":{"assembly_name":"TestIL","type_full_name":"TestIL.Simple","method_name":"AddOne",
+      "edits":[{"op":"replace","index":1,"opcode":"ldc.i4","operand":"int:41"}]}}}'
+
+# 4. Save. Original file is backed up to <path>.<yyyyMMdd-HHmmss>.bak first.
+curl -s -X POST http://localhost:3000/ -H "Content-Type: application/json" -d '{
+  "jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+    "name":"save_assembly",
+    "arguments":{"assembly_name":"TestIL"}}}'
+```
+
+Reload the saved DLL in a fresh process and `AddOne(10)` returns **`51`** instead of **`11`**.
+
+### Caveats
+
+- **No Ctrl+Z.** `patch_method_il` does not route through dnSpy's undo stack. Use `revert_method_il` — the snapshot is taken the first time a given method is patched, and dropped after revert or after a successful save.
+- **dnSpy's in-memory view is not refreshed after save.** Reopen the assembly in dnSpy to see the saved state in the running instance.
+- **GAC paths are refused.** Saving `mscorlib` etc. returns a `-32602` error.
+- **Instruction-level only.** Adding / removing locals or exception handlers is out of scope for 0.1.3; `get_method_il` exposes them read-only.
 
 ## Installation
 
@@ -104,7 +180,7 @@ cp bin/Release/net10.0-windows/dnSpy.Extension.MCP.x.dll \
 Settings live under **Edit → Settings → MCP Server**:
 
 - **Enable Server** — starts/stops the HTTP server immediately when toggled and applied.
-- **Port** — preferred TCP port (default `3000`). If the port is already in use, the server automatically tries `port + 1`, up to 20 attempts, and logs which port it actually bound to. Check the Server Log pane (or `%TEMP%\…` fallback log) for the resolved port.
+- **Port** — preferred TCP port (default `3000`). If the port is already in use, the server automatically tries `port + 1`, up to 20 attempts, and logs which port it actually bound to. Check the Server Log pane for the resolved port.
 - **Host** — bind address (default `localhost`).
 
 ## Transports
@@ -183,7 +259,34 @@ curl -X POST "http://localhost:3000/message?sessionId=<sessionId>" \
 # HTTP 202 Accepted — the response appears on Terminal A's SSE stream
 ```
 
-### Claude Desktop configuration
+### Client configuration
+
+#### Claude Code
+
+Use the CLI to register the server once — it picks up the Streamable HTTP transport at `/`:
+
+```bash
+claude mcp add --transport http dnspy http://localhost:3000
+# verify:
+claude mcp list
+```
+
+Or add it to a checked-in `.mcp.json` at your project root (scoped to the project):
+
+```json
+{
+  "mcpServers": {
+    "dnspy": {
+      "type": "http",
+      "url": "http://localhost:3000"
+    }
+  }
+}
+```
+
+Run `/mcp` inside Claude Code to confirm `dnspy` is connected and list its tools.
+
+#### Claude Desktop
 
 ```json
 {
@@ -195,6 +298,10 @@ curl -X POST "http://localhost:3000/message?sessionId=<sessionId>" \
   }
 }
 ```
+
+#### codex
+
+See the Streamable HTTP section above for the `~/.codex/config.toml` snippet.
 
 ## Development
 
@@ -209,23 +316,26 @@ dotnet build -c Debug -f net10.0-windows
 ```
 dnSpy.Extension.MCP/
 ├── .github/workflows/      GitHub Actions (build, release)
-├── McpServer.cs            HttpListener HTTP + SSE server + port fallback
+├── McpServer.cs            HttpListener HTTP + SSE + Streamable HTTP + port fallback
 ├── McpProtocol.cs          JSON-RPC 2.0 / MCP DTOs
-├── McpTools.cs             10 MCP tools (wraps dnSpy services)
-├── McpSettings.cs          Settings view-model + persistence + file log
+├── McpTools.cs             Analysis tools + MEF export + dispatch (sealed partial)
+├── McpTools.IL.cs          IL view/patch/revert/save + operand renderer & parser
+├── McpSettings.cs          Settings view-model + persistence + log (disk log in Debug only)
 ├── McpSettingsPage.cs      IAppSettingsPageProvider for dnSpy settings dialog
 ├── BepInExResources.cs     Embedded BepInEx docs (6 resources)
 ├── TheExtension.cs         IExtension entry point; starts server on Loaded
+├── tests/fixtures/         TestIL.cs + build-fixture.ps1 + run-tests.ps1 (E2E harness)
 └── dnSpy.Extension.MCP.csproj
 ```
 
 ### Architecture notes
 
 - **Targets**: `net48` and `net10.0-windows` (inherited from `DnSpyCommon.props`).
-- **Transport**: a single `HttpListener` serves both the plain HTTP JSON-RPC path and the SSE path. Kestrel is intentionally **not** used — dnSpy's self-contained .NET bundle does not ship ASP.NET Core, so any `Microsoft.AspNetCore.*` reference would cause a silent `TypeLoadException` during MEF composition and the extension's `IExtension` part would never instantiate.
+- **Transport**: a single `HttpListener` serves the plain HTTP JSON-RPC, 2024-11-05 SSE, and 2025-03-26 Streamable HTTP paths on one port. Kestrel is intentionally **not** used — dnSpy's self-contained .NET bundle does not ship ASP.NET Core, so any `Microsoft.AspNetCore.*` reference would cause a silent `TypeLoadException` during MEF composition and the extension's `IExtension` part would never instantiate.
 - **MEF**: services use `[Export(typeof(T))]` + `[ImportingConstructor]`. Don't `new` up `McpServer` / `McpSettings` / `McpTools`.
+- **UI-thread marshalling**: every tool handler in `ExecuteTool` runs on the WPF dispatcher. `IDocumentTreeView` nodes are `DispatcherObject`s and throw "calling thread cannot access this object" if read from an HTTP worker, so marshalling is mandatory; handlers that already take the dispatcher path (patch, revert, save) double-wrap harmlessly.
 - **Error codes**: `ArgumentException` inside a tool handler → JSON-RPC `-32602` (invalid params); any other exception → `-32603` (internal error).
-- **Logging**: `McpSettings.Log(...)` writes to both the in-UI log pane and an on-disk fallback file. The on-disk log is authoritative — it survives when the dispatcher isn't yet running or when the Settings dialog is closed.
+- **Logging**: `McpSettings.Log(...)` writes to the in-UI log pane always, and to `D:\dnspy-mcp.log` only in **Debug** builds. Release builds keep everything in-memory; no writable `D:` drive is required on end-user machines.
 
 ## Protocol
 
@@ -248,6 +358,8 @@ git push origin v1.0.0
 - **Dependencies**: `dnSpy.Contracts.DnSpy`, `dnSpy.Contracts.Logic`, `dnlib`, `System.Text.Json` (package on `net48`, in-box on `net10.0-windows`).
 - **BFS path finding**: `find_path_to_type` does breadth-first search over each type's fields and properties.
 - **Decompilation**: uses dnSpy's default decompiler (usually C#) via `IDecompilerService`.
+- **IL writing**: `save_assembly` calls `((ModuleDefMD)module).NativeWrite(path, NativeModuleWriterOptions)` for modules loaded from disk (preserves native stubs, Win32 resources, delay-loaded imports, mixed-mode code) and `module.Write(path, ModuleWriterOptions)` for freshly constructed modules. Memory-mapped I/O is disabled via `peImage as dnlib.PE.IInternalPEImage` before the write — the internal `IMmapDisabler` in `dnSpy.AsmEditor` is inlined to avoid depending on AsmEditor.
+- **Cross-method references** in `patch_method_il` operands (`method:`, `field:`, `type:`) are resolved by walking every loaded module for a `FullName` match and then imported into the destination module via `new Importer(module, ImporterOptions.TryToUseDefs)`.
 
 ## Troubleshooting
 
