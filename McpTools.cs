@@ -17,19 +17,21 @@ namespace dnSpy.Extension.MCP
     /// Provides tools for listing assemblies, inspecting types, decompiling methods, and generating BepInEx plugins.
     /// </summary>
     [Export(typeof(McpTools))]
-    sealed class McpTools
+    sealed partial class McpTools
     {
         readonly IDocumentTreeView documentTreeView;
         readonly IDecompilerService decompilerService;
+        readonly McpSettings settings;
 
         /// <summary>
         /// Initializes the MCP tools with dnSpy services.
         /// </summary>
         [ImportingConstructor]
-        public McpTools(IDocumentTreeView documentTreeView, IDecompilerService decompilerService)
+        public McpTools(IDocumentTreeView documentTreeView, IDecompilerService decompilerService, McpSettings settings)
         {
             this.documentTreeView = documentTreeView;
             this.decompilerService = decompilerService;
+            this.settings = settings;
         }
 
         /// <summary>
@@ -111,7 +113,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "decompile_method",
-                    Description = "Decompile a specific method to C# code",
+                    Description = "Decompile a specific method to C# code. For overloaded methods, pass parameter_types (array of fully-qualified type names from list_methods) or method_token (uint MDToken) to disambiguate.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -126,6 +128,15 @@ namespace dnSpy.Extension.MCP
                             ["method_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
                                 ["description"] = "Name of the method"
+                            },
+                            ["parameter_types"] = new Dictionary<string, object> {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object> { ["type"] = "string" },
+                                ["description"] = "Optional. Fully-qualified parameter type names (e.g. [\"System.Int32\",\"System.String\"]) to disambiguate overloads. Matches MethodSig.Params, not including 'this'."
+                            },
+                            ["method_token"] = new Dictionary<string, object> {
+                                ["type"] = "integer",
+                                ["description"] = "Optional. MDToken.Raw as uint (from get_type_info or list_methods). Unambiguous — takes precedence over parameter_types."
                             }
                         },
                         ["required"] = new List<string> { "assembly_name", "type_full_name", "method_name" }
@@ -255,6 +266,121 @@ namespace dnSpy.Extension.MCP
                         },
                         ["required"] = new List<string> { "assembly_name", "from_type", "to_type" }
                     }
+                },
+                new ToolInfo {
+                    Name = "list_methods",
+                    Description = "List methods of a type with unambiguous identifiers. Each entry includes the MDToken (as uint) and parameter_types array so the caller can feed either back into get_method_il / patch_method_il / decompile_method to disambiguate overloads. Paginated (default page size 10).",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Name of the assembly"
+                            },
+                            ["type_full_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Fully qualified type name"
+                            },
+                            ["cursor"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Opaque pagination cursor from a previous response."
+                            }
+                        },
+                        ["required"] = new List<string> { "assembly_name", "type_full_name" }
+                    }
+                },
+                new ToolInfo {
+                    Name = "get_method_il",
+                    Description = "Return the IL body of a method: instructions (index, offset, opcode, operand), locals, exception handlers, and body flags. Operand format is tagged and round-trips with patch_method_il (e.g. 'int:42', 'str:\"hello\"', 'method:Ns.T::M(System.Int32):System.Void', 'label:7'). For overloaded methods, pass parameter_types or method_token to disambiguate.",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Name of the assembly"
+                            },
+                            ["type_full_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Fully qualified type name"
+                            },
+                            ["method_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Method name"
+                            },
+                            ["parameter_types"] = new Dictionary<string, object> {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object> { ["type"] = "string" },
+                                ["description"] = "Optional. Fully-qualified parameter type names for overload disambiguation."
+                            },
+                            ["method_token"] = new Dictionary<string, object> {
+                                ["type"] = "integer",
+                                ["description"] = "Optional. MDToken.Raw from list_methods / get_type_info. Takes precedence over parameter_types."
+                            }
+                        },
+                        ["required"] = new List<string> { "assembly_name", "type_full_name", "method_name" }
+                    }
+                },
+                new ToolInfo {
+                    Name = "patch_method_il",
+                    Description = "Apply an ordered list of IL edits to a method body in memory. Ops: {op:\"replace\",index,opcode,operand}, {op:\"insert\",index,opcode,operand} (insert BEFORE index), {op:\"delete\",index}, {op:\"set_init_locals\",value:bool}. Indices in later ops refer to the state BEFORE the whole batch. Operand grammar matches get_method_il output. Set optimize_macros=true to auto-shorten after edits. Changes are NOT written to disk — call save_assembly to persist. First patch to a method is snapshotted so revert_method_il can restore it.",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["assembly_name"] = new Dictionary<string, object> { ["type"] = "string" },
+                            ["type_full_name"] = new Dictionary<string, object> { ["type"] = "string" },
+                            ["method_name"] = new Dictionary<string, object> { ["type"] = "string" },
+                            ["parameter_types"] = new Dictionary<string, object> {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object> { ["type"] = "string" }
+                            },
+                            ["method_token"] = new Dictionary<string, object> { ["type"] = "integer" },
+                            ["edits"] = new Dictionary<string, object> {
+                                ["type"] = "array",
+                                ["description"] = "Ordered edit ops. See tool description for shape."
+                            },
+                            ["optimize_macros"] = new Dictionary<string, object> {
+                                ["type"] = "boolean",
+                                ["description"] = "Call body.OptimizeMacros() after edits to auto-shorten ldarg/ldloc/branches. Default false."
+                            }
+                        },
+                        ["required"] = new List<string> { "assembly_name", "type_full_name", "method_name", "edits" }
+                    }
+                },
+                new ToolInfo {
+                    Name = "revert_method_il",
+                    Description = "Restore the method body that was captured on first patch_method_il. Fails with -32602 if no pending snapshot exists for the method.",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["assembly_name"] = new Dictionary<string, object> { ["type"] = "string" },
+                            ["type_full_name"] = new Dictionary<string, object> { ["type"] = "string" },
+                            ["method_name"] = new Dictionary<string, object> { ["type"] = "string" },
+                            ["parameter_types"] = new Dictionary<string, object> {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object> { ["type"] = "string" }
+                            },
+                            ["method_token"] = new Dictionary<string, object> { ["type"] = "integer" }
+                        },
+                        ["required"] = new List<string> { "assembly_name", "type_full_name", "method_name" }
+                    }
+                },
+                new ToolInfo {
+                    Name = "save_assembly",
+                    Description = "Write the (possibly patched) module of an assembly back to disk. When output_path is omitted, the original file is overwritten after a timestamped backup (<path>.<yyyyMMdd-HHmmss>.bak) is created. GAC paths are refused. Memory-mapped I/O is disabled before writing so the live dnSpy process releases the file. Note: dnSpy's in-memory tree is NOT refreshed — reopen the assembly to see the saved state inside this instance.",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Name of the assembly to save"
+                            },
+                            ["output_path"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional. Target file path. If absent, overwrite original with a timestamped backup."
+                            }
+                        },
+                        ["required"] = new List<string> { "assembly_name" }
+                    }
                 }
             };
         }
@@ -267,39 +393,53 @@ namespace dnSpy.Extension.MCP
         /// <returns>The tool execution result.</returns>
         public CallToolResult ExecuteTool(string toolName, Dictionary<string, object>? arguments)
         {
-            try
+            // Marshal every tool handler onto the WPF UI thread. dnSpy's document tree
+            // is a DispatcherObject — the moment a user-loaded assembly is indexed, all
+            // downstream tree/node reads from an HTTP worker thread throw
+            // "calling thread cannot access this object". Patch/save already take this
+            // path explicitly; InvokeOnUiThread short-circuits when already on the UI
+            // thread, so the double-wrap is a no-op.
+            return InvokeOnUiThread(() =>
             {
-                return toolName switch
+                try
                 {
-                    "list_assemblies" => ListAssemblies(),
-                    "get_assembly_info" => GetAssemblyInfo(arguments),
-                    "list_types" => ListTypes(arguments),
-                    "get_type_info" => GetTypeInfo(arguments),
-                    "decompile_method" => DecompileMethod(arguments),
-                    "search_types" => SearchTypes(arguments),
-                    "generate_bepinex_plugin" => GenerateBepInExPlugin(arguments),
-                    "get_type_fields" => GetTypeFields(arguments),
-                    "get_type_property" => GetTypeProperty(arguments),
-                    "find_path_to_type" => FindPathToType(arguments),
-                    _ => new CallToolResult
+                    return toolName switch
+                    {
+                        "list_assemblies" => ListAssemblies(),
+                        "get_assembly_info" => GetAssemblyInfo(arguments),
+                        "list_types" => ListTypes(arguments),
+                        "get_type_info" => GetTypeInfo(arguments),
+                        "decompile_method" => DecompileMethod(arguments),
+                        "search_types" => SearchTypes(arguments),
+                        "generate_bepinex_plugin" => GenerateBepInExPlugin(arguments),
+                        "get_type_fields" => GetTypeFields(arguments),
+                        "get_type_property" => GetTypeProperty(arguments),
+                        "find_path_to_type" => FindPathToType(arguments),
+                        "list_methods" => ListMethods(arguments),
+                        "get_method_il" => GetMethodIL(arguments),
+                        "patch_method_il" => PatchMethodIL(arguments),
+                        "revert_method_il" => RevertMethodIL(arguments),
+                        "save_assembly" => SaveAssembly(arguments),
+                        _ => new CallToolResult
+                        {
+                            Content = new List<ToolContent> {
+                                new ToolContent { Text = $"Unknown tool: {toolName}" }
+                            },
+                            IsError = true
+                        }
+                    };
+                }
+                catch (Exception ex)
+                {
+                    return new CallToolResult
                     {
                         Content = new List<ToolContent> {
-                            new ToolContent { Text = $"Unknown tool: {toolName}" }
+                            new ToolContent { Text = $"Error executing tool {toolName}: {ex.Message}" }
                         },
                         IsError = true
-                    }
-                };
-            }
-            catch (Exception ex)
-            {
-                return new CallToolResult
-                {
-                    Content = new List<ToolContent> {
-                        new ToolContent { Text = $"Error executing tool {toolName}: {ex.Message}" }
-                    },
-                    IsError = true
-                };
-            }
+                    };
+                }
+            });
         }
 
         CallToolResult ListAssemblies()
@@ -460,12 +600,14 @@ namespace dnSpy.Extension.MCP
             var allMethods = type.Methods.Select(m => new
             {
                 Name = m.Name.String,
+                Token = m.MDToken.Raw,
                 Signature = m.FullName,
                 IsPublic = m.IsPublic,
                 IsStatic = m.IsStatic,
                 IsVirtual = m.IsVirtual,
                 IsAbstract = m.IsAbstract,
                 ReturnType = m.ReturnType?.FullName ?? "void",
+                ParameterTypes = m.MethodSig == null ? new List<string>() : m.MethodSig.Params.Select(t => t?.FullName ?? "?").ToList(),
                 Parameters = m.Parameters.Select(p => new
                 {
                     Name = p.Name,
@@ -558,6 +700,9 @@ namespace dnSpy.Extension.MCP
             var typeFullName = typeNameObj.ToString() ?? string.Empty;
             var methodName = methodNameObj.ToString() ?? string.Empty;
 
+            var parameterTypes = ReadStringArray(arguments, "parameter_types");
+            uint? methodToken = ReadOptionalUInt(arguments, "method_token");
+
             var assembly = FindAssemblyByName(assemblyName);
             if (assembly == null)
                 throw new ArgumentException($"Assembly not found: {assemblyName}");
@@ -566,9 +711,7 @@ namespace dnSpy.Extension.MCP
             if (type == null)
                 throw new ArgumentException($"Type not found: {typeFullName}");
 
-            var method = type.Methods.FirstOrDefault(m => m.Name == methodName);
-            if (method == null)
-                throw new ArgumentException($"Method not found: {methodName}");
+            var method = FindMethod(type, methodName, parameterTypes, methodToken);
 
             // Decompile the method
             var decompiler = decompilerService.Decompiler;
@@ -997,6 +1140,114 @@ namespace dnSpy.Extension.MCP
             return assembly.Modules
                 .SelectMany(m => m.Types)
                 .FirstOrDefault(t => t.FullName.Equals(fullName, StringComparison.Ordinal));
+        }
+
+        /// <summary>
+        /// Resolves a method by name, optionally disambiguated by parameter types or MDToken.
+        /// Resolution order: token &gt; parameter_types &gt; name-only.
+        /// Throws ArgumentException (-> JSON-RPC -32602) on 0 or &gt;1 matches, with a candidate list
+        /// when multiple overloads share the name so the caller can retry with parameter_types.
+        /// </summary>
+        MethodDef FindMethod(TypeDef type, string methodName, IList<string>? parameterTypes, uint? methodToken)
+        {
+            var candidates = type.Methods.Where(m => m.Name == methodName).ToList();
+            if (candidates.Count == 0)
+                throw new ArgumentException($"Method not found: {type.FullName}::{methodName}");
+
+            if (methodToken.HasValue)
+            {
+                var byToken = candidates.FirstOrDefault(m => m.MDToken.Raw == methodToken.Value)
+                    ?? type.Methods.FirstOrDefault(m => m.MDToken.Raw == methodToken.Value);
+                if (byToken == null)
+                    throw new ArgumentException($"No method in {type.FullName} has MDToken 0x{methodToken.Value:X8}");
+                return byToken;
+            }
+
+            if (parameterTypes != null)
+            {
+                var matches = candidates.Where(m => MethodParamTypesMatch(m, parameterTypes)).ToList();
+                if (matches.Count == 1)
+                    return matches[0];
+                if (matches.Count == 0)
+                    throw new ArgumentException(
+                        $"No overload of {type.FullName}::{methodName} has parameters [{string.Join(", ", parameterTypes)}]. " +
+                        $"Candidates: {string.Join(" | ", candidates.Select(DescribeSignature))}");
+                throw new ArgumentException(
+                    $"Ambiguous match for {type.FullName}::{methodName}: {matches.Count} overloads matched. " +
+                    $"Use method_token instead. Matches: {string.Join(" | ", matches.Select(DescribeSignature))}");
+            }
+
+            if (candidates.Count > 1)
+                throw new ArgumentException(
+                    $"{type.FullName}::{methodName} is overloaded ({candidates.Count}). Pass parameter_types or method_token. " +
+                    $"Candidates: {string.Join(" | ", candidates.Select(DescribeSignature))}");
+
+            return candidates[0];
+        }
+
+        static bool MethodParamTypesMatch(MethodDef m, IList<string> expected)
+        {
+            var sig = m.MethodSig;
+            if (sig == null)
+                return expected.Count == 0;
+            if (sig.Params.Count != expected.Count)
+                return false;
+            for (int i = 0; i < expected.Count; i++)
+            {
+                var actual = sig.Params[i]?.FullName ?? string.Empty;
+                if (!string.Equals(actual, expected[i], StringComparison.Ordinal))
+                    return false;
+            }
+            return true;
+        }
+
+        static string DescribeSignature(MethodDef m)
+        {
+            var sig = m.MethodSig;
+            var @params = sig == null ? string.Empty : string.Join(",", sig.Params.Select(t => t?.FullName ?? "?"));
+            var ret = m.ReturnType?.FullName ?? "void";
+            return $"{m.Name}({@params}):{ret}#0x{m.MDToken.Raw:X8}";
+        }
+
+        static IList<string>? ReadStringArray(Dictionary<string, object> args, string key)
+        {
+            if (!args.TryGetValue(key, out var raw) || raw == null)
+                return null;
+            if (raw is JsonElement el)
+            {
+                if (el.ValueKind == JsonValueKind.Null)
+                    return null;
+                if (el.ValueKind != JsonValueKind.Array)
+                    throw new ArgumentException($"{key} must be an array of strings");
+                var list = new List<string>(el.GetArrayLength());
+                foreach (var item in el.EnumerateArray())
+                    list.Add(item.ValueKind == JsonValueKind.String ? (item.GetString() ?? string.Empty) : item.ToString());
+                return list;
+            }
+            if (raw is IEnumerable<object> seq)
+                return seq.Select(o => o?.ToString() ?? string.Empty).ToList();
+            throw new ArgumentException($"{key} must be an array of strings");
+        }
+
+        static uint? ReadOptionalUInt(Dictionary<string, object> args, string key)
+        {
+            if (!args.TryGetValue(key, out var raw) || raw == null)
+                return null;
+            if (raw is JsonElement el)
+            {
+                if (el.ValueKind == JsonValueKind.Null)
+                    return null;
+                if (el.ValueKind == JsonValueKind.Number && el.TryGetUInt32(out var u))
+                    return u;
+                if (el.ValueKind == JsonValueKind.String && uint.TryParse(el.GetString(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var su))
+                    return su;
+                throw new ArgumentException($"{key} must be an unsigned 32-bit integer");
+            }
+            if (raw is string s && uint.TryParse(s, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var ps))
+                return ps;
+            if (raw is IConvertible conv)
+                return Convert.ToUInt32(conv, System.Globalization.CultureInfo.InvariantCulture);
+            throw new ArgumentException($"{key} must be an unsigned 32-bit integer");
         }
 
         /// <summary>

@@ -6,6 +6,10 @@
     <AssemblyName>dnSpy.Extension.MCP.x</AssemblyName>
     <Nullable>enable</Nullable>
     <UseWPF>true</UseWPF>
+    <!-- The SDK implicitly globs every .cs file under the project root. Keep the
+         test fixture (tests/fixtures/) and its generated obj/ out of our compile
+         so building the extension doesn't pull in TestIL.cs / AssemblyInfo.cs. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);tests/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
