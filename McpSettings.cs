@@ -71,26 +71,32 @@ namespace dnSpy.Extension.MCP {
 			}
 		}
 
+#if DEBUG
 		/// <summary>
-		/// Path of the on-disk fallback log. Writes here always succeed and do not depend on the
-		/// WPF dispatcher being alive or on a settings dialog being open, which makes this the
-		/// authoritative record of what the extension actually did at startup.
+		/// Path of the on-disk fallback log used only in debug builds. Writes here always succeed
+		/// and do not depend on the WPF dispatcher being alive or on a settings dialog being open,
+		/// which makes this the authoritative record of what the extension did at startup during
+		/// development. Release builds do not write to disk.
 		/// </summary>
 		public static readonly string LogFilePath = @"D:\dnspy-mcp.log";
 
 		static readonly object logFileLock = new object();
+#endif
 
 		/// <summary>
-		/// Adds a log message with timestamp to the log collection and mirrors it to
-		/// <see cref="LogFilePath"/>. File writes are the authoritative log — the in-memory
-		/// collection is best-effort for the settings UI only.
+		/// Adds a log message with timestamp to the log collection. In DEBUG builds the entry is
+		/// also mirrored to an on-disk log file so that startup problems are captured even when the
+		/// WPF dispatcher or settings dialog is unavailable. Release builds only keep the in-memory
+		/// collection for the settings UI.
 		/// </summary>
 		/// <param name="message">The log message to add.</param>
 		public void Log(string message) {
 			var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
 			var logEntry = $"[{timestamp}] {message}";
 
-			// Always mirror to disk first — UI writes can fail silently if the dispatcher is unavailable.
+#if DEBUG
+			// Debug-only: mirror to disk. UI writes can fail silently if the dispatcher is unavailable,
+			// so the on-disk log is the authoritative record during development.
 			try {
 				lock (logFileLock)
 					System.IO.File.AppendAllText(LogFilePath, logEntry + Environment.NewLine);
@@ -98,6 +104,7 @@ namespace dnSpy.Extension.MCP {
 			catch {
 				// If we can't write the log file, there is nowhere sensible to report that failure.
 			}
+#endif
 
 			void addToCollection() {
 				LogMessages.Add(logEntry);
