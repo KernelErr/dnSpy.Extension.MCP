@@ -496,6 +496,7 @@ namespace dnSpy.Extension.MCP {
 					"tools/list" => HandleListTools(),
 					"tools/call" => HandleCallTool(request.Params),
 					"resources/list" => HandleListResources(),
+					"resources/templates/list" => HandleListResourceTemplates(),
 					"resources/read" => HandleReadResource(request.Params),
 					_ => throw new Exception($"Unknown method: {request.Method}")
 				};
@@ -575,6 +576,8 @@ namespace dnSpy.Extension.MCP {
 				Resources = bepinexResources.GetResources()
 			};
 		}
+
+		object HandleListResourceTemplates() => new { resourceTemplates = Array.Empty<object>() };
 
 		object HandleReadResource(Dictionary<string, object>? parameters) {
 			if (parameters == null)
