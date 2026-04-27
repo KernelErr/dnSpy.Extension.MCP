@@ -336,6 +336,47 @@ namespace dnSpy.Extension.MCP
                             ["method_token"] = new Dictionary<string, object> { ["type"] = "integer" },
                             ["edits"] = new Dictionary<string, object> {
                                 ["type"] = "array",
+                                ["items"] = new Dictionary<string, object> {
+                                    ["type"] = "object",
+                                    ["oneOf"] = new List<object> {
+                                        new Dictionary<string, object> {
+                                            ["properties"] = new Dictionary<string, object> {
+                                                ["op"] = new Dictionary<string, object> { ["const"] = "replace" },
+                                                ["index"] = new Dictionary<string, object> { ["type"] = "integer" },
+                                                ["opcode"] = new Dictionary<string, object> { ["type"] = "string" },
+                                                ["operand"] = new Dictionary<string, object> { ["type"] = "string" }
+                                            },
+                                            ["required"] = new List<string> { "op", "index", "opcode", "operand" },
+                                            ["additionalProperties"] = false
+                                        },
+                                        new Dictionary<string, object> {
+                                            ["properties"] = new Dictionary<string, object> {
+                                                ["op"] = new Dictionary<string, object> { ["const"] = "insert" },
+                                                ["index"] = new Dictionary<string, object> { ["type"] = "integer" },
+                                                ["opcode"] = new Dictionary<string, object> { ["type"] = "string" },
+                                                ["operand"] = new Dictionary<string, object> { ["type"] = "string" }
+                                            },
+                                            ["required"] = new List<string> { "op", "index", "opcode", "operand" },
+                                            ["additionalProperties"] = false
+                                        },
+                                        new Dictionary<string, object> {
+                                            ["properties"] = new Dictionary<string, object> {
+                                                ["op"] = new Dictionary<string, object> { ["const"] = "delete" },
+                                                ["index"] = new Dictionary<string, object> { ["type"] = "integer" }
+                                            },
+                                            ["required"] = new List<string> { "op", "index" },
+                                            ["additionalProperties"] = false
+                                        },
+                                        new Dictionary<string, object> {
+                                            ["properties"] = new Dictionary<string, object> {
+                                                ["op"] = new Dictionary<string, object> { ["const"] = "set_init_locals" },
+                                                ["value"] = new Dictionary<string, object> { ["type"] = "boolean" }
+                                            },
+                                            ["required"] = new List<string> { "op", "value" },
+                                            ["additionalProperties"] = false
+                                        }
+                                    }
+                                },
                                 ["description"] = "Ordered edit ops. See tool description for shape."
                             },
                             ["optimize_macros"] = new Dictionary<string, object> {
