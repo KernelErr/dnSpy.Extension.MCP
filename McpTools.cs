@@ -302,6 +302,41 @@ namespace dnSpy.Extension.MCP
                     }
                 },
                 new ToolInfo {
+                    Name = "find_callees",
+                    Description = "Cross-reference (inverse of find_callers): list what a single method USES — the methods it calls, the fields it reads/writes, and the types it touches in its own body (dnSpy Analyze's 'Uses' node). Identify the method by assembly_name + type_full_name + method_name (with parameter_types or method_token for overloads). Results are deduplicated per referenced member: each row has ref_kind (method/field/type), the full signature, the resolved MDToken (uint, feed to decompile_by_token), target_assembly, the set of opcodes, an occurrences count, and first_il_index. Paginated (default page size 10).",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Assembly that declares the method to analyze"
+                            },
+                            ["type_full_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Full name of the type that declares the method"
+                            },
+                            ["method_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Name of the method whose outgoing references to list"
+                            },
+                            ["parameter_types"] = new Dictionary<string, object> {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object> { ["type"] = "string" },
+                                ["description"] = "Optional. Fully-qualified parameter type names to disambiguate an overloaded method."
+                            },
+                            ["method_token"] = new Dictionary<string, object> {
+                                ["type"] = "integer",
+                                ["description"] = "Optional. MDToken.Raw (uint) of the method. Takes precedence over parameter_types."
+                            },
+                            ["cursor"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional cursor for pagination (opaque token from previous response). Default page size: 10 results."
+                            }
+                        },
+                        ["required"] = new List<string> { "assembly_name", "type_full_name", "method_name" }
+                    }
+                },
+                new ToolInfo {
                     Name = "find_references",
                     Description = "Cross-reference: find every IL site that references a target across ALL loaded assemblies. target_kind selects what to look for: 'method' (any call / ldftn / ldtoken of the method), 'field' (any ldfld/stfld/ldsfld/stsfld/ldflda + ldtoken), 'type' (newarr / castclass / isinst / box / ldtoken / etc.), or 'string' (ldstr matching a query). Provide the identity fields for the chosen kind (see properties). Each hit returns the referencing type, method, MDToken (uint), signature, opcode, the resolved reference, and IL index/offset. Paginated (default page size 10). For methods, find_callers is the call-only specialization.",
                     InputSchema = new Dictionary<string, object> {
@@ -347,6 +382,46 @@ namespace dnSpy.Extension.MCP
                             }
                         },
                         ["required"] = new List<string> { "target_kind" }
+                    }
+                },
+                new ToolInfo {
+                    Name = "find_overrides",
+                    Description = "Cross-reference for virtual methods (dnSpy Analyze 'Overridden By' / 'Overrides'). direction='overridden_by' (default): given a virtual/abstract method, list every subclass across ALL loaded assemblies that overrides it — i.e. the concrete bodies that actually run on a callvirt (find_callers only finds the literal call site to the base slot, never these implementations). direction='overrides': given a method, list the base-class virtual(s) it overrides, walking up the base chain (plus explicit interface overrides). Identify the method by assembly_name + type_full_name + method_name (parameter_types / method_token for overloads). Each hit returns type, method, signature, MDToken (uint), assembly, is_abstract. Paginated (default page size 10).",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["direction"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["enum"] = new List<string> { "overridden_by", "overrides" },
+                                ["description"] = "overridden_by (default): subclasses that override this method. overrides: base-class virtuals this method overrides."
+                            },
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Assembly that declares the target method"
+                            },
+                            ["type_full_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Full name of the type that declares the target method"
+                            },
+                            ["method_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Name of the target (virtual) method"
+                            },
+                            ["parameter_types"] = new Dictionary<string, object> {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object> { ["type"] = "string" },
+                                ["description"] = "Optional. Fully-qualified parameter type names to disambiguate an overloaded method."
+                            },
+                            ["method_token"] = new Dictionary<string, object> {
+                                ["type"] = "integer",
+                                ["description"] = "Optional. MDToken.Raw (uint) of the target method. Takes precedence over parameter_types."
+                            },
+                            ["cursor"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional cursor for pagination (opaque token from previous response). Default page size: 10 results."
+                            }
+                        },
+                        ["required"] = new List<string> { "assembly_name", "type_full_name", "method_name" }
                     }
                 },
                 new ToolInfo {
@@ -701,7 +776,9 @@ namespace dnSpy.Extension.MCP
                         "search_types" => SearchTypes(arguments),
                         "search_members" => SearchMembers(arguments),
                         "find_callers" => FindCallers(arguments),
+                        "find_callees" => FindCallees(arguments),
                         "find_references" => FindReferences(arguments),
+                        "find_overrides" => FindOverrides(arguments),
                         "search_string_literals" => SearchStringLiterals(arguments),
                         "list_string_constants" => ListStringConstants(arguments),
                         "generate_bepinex_plugin" => GenerateBepInExPlugin(arguments),

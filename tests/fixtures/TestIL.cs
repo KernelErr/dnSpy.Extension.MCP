@@ -60,6 +60,14 @@ namespace TestIL
         public static int CallsAddOne() => Simple.AddOne(5);
         public static string CallsSave() => StringKeys.SaveGame();
         public static System.Type RefType() => typeof(Simple);
+
+        // find_callees ("Uses") coverage: this body references methods (AddOne, Add) and a
+        // field (sceneToLoad, read + written), so the callee list spans more than one ref kind.
+        public static int Uses()
+        {
+            sceneToLoad = Simple.AddOne(sceneToLoad);
+            return Simple.Add(sceneToLoad, 1);
+        }
     }
 
     // Property + event coverage for search_members kinds (the fixture otherwise has only
@@ -74,11 +82,13 @@ namespace TestIL
         public void Die() => OnDied?.Invoke();
     }
 
-    // Base-type hierarchy for list_types base_type filtering (incl. transitive: Boss : Enemy : BaseEntity).
-    public abstract class BaseEntity { }
-    public class Player : BaseEntity { }
-    public class Enemy : BaseEntity { }
-    public class Boss : Enemy { }
+    // Base-type hierarchy for list_types base_type filtering (incl. transitive: Boss : Enemy : BaseEntity)
+    // and find_overrides: Attack is virtual on BaseEntity and overridden down the chain
+    // (Boss overrides Enemy's override, which overrides BaseEntity's).
+    public abstract class BaseEntity { public virtual int Attack() => 1; }
+    public class Player : BaseEntity { public override int Attack() => 100; }
+    public class Enemy : BaseEntity { public override int Attack() => 50; }
+    public class Boss : Enemy { public override int Attack() => 500; }
 
     // Compiler-generated state-machine coverage for nested-type addressing + decompile rescue.
     // DoCoroutine -> nested iterator state machine <DoCoroutine>d__N : IEnumerator (MoveNext).

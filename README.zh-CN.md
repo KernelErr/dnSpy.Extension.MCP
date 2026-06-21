@@ -6,7 +6,7 @@ English: see [README.md](README.md).
 
 ## 功能
 
-### MCP 工具（共 21 个）
+### MCP 工具（共 23 个）
 
 #### 分析与导航
 
@@ -26,7 +26,9 @@ English: see [README.md](README.md).
 #### 交叉引用（xref）
 
 1. **find_callers** — 跨所有程序集查找"谁调用了某方法"（call / callvirt / newobj / ldftn）。每条命中含调用者类型/方法、`MDToken`、opcode、IL index/offset
-2. **find_references** — 跨所有程序集查找引用某 `method` / `field` / `type` / `string` 的所有 IL 位置（由 `target_kind` 选择目标种类）
+2. **find_callees** — 反方向：某个方法"用了谁"（它调用的方法、读写的字段、引用的类型），按被引用成员去重，每条带 opcode 集合 + 出现次数 + 已解析的 `MDToken`（对应 dnSpy Analyze 的 "Uses"）
+3. **find_references** — 跨所有程序集查找引用某 `method` / `field` / `type` / `string` 的所有 IL 位置（由 `target_kind` 选择目标种类）
+4. **find_overrides** — 虚方法多态（对应 dnSpy Analyze 的 "Overridden By" / "Overrides"）：`direction='overridden_by'` 列出所有重写某虚方法的子类（即 `callvirt` 真正可能分发到的具体实现——这是 `find_callers` 给不出的）；`direction='overrides'` 沿基类链向上找该方法重写了谁
 
 #### 字符串字面量
 

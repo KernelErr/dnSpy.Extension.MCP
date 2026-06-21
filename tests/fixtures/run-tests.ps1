@@ -463,6 +463,51 @@ try
     try { Rpc 'search_members' @{ query='AddOne'; kinds=@('methods') } | Out-Null }
     catch { $badKind = $_.Exception.Message }
     Assert ($badKind -and ($badKind -match 'unknown member kind')) "invalid kind errors with guidance" "got: $badKind"
+
+    # ----- step 20: find_callees (dnSpy Analyze "Uses" — outgoing references of one method) -----
+    Write-Host ""
+    Write-Host "[20] find_callees on Refs.Uses"
+    $callees = Rpc 'find_callees' @{ assembly_name='TestIL'; type_full_name='TestIL.Refs'; method_name='Uses' }
+    $mCallees = @($callees.items | Where-Object { $_.ref_kind -eq 'method' })
+    $mSigs = ($mCallees | ForEach-Object { $_.signature }) -join "`n"
+    Assert ($mSigs -match 'AddOne') "find_callees lists Simple.AddOne as a method callee"
+    Assert ($mSigs -match 'Simple::Add\(') "find_callees lists Simple.Add as a method callee"
+    $fCallees = @($callees.items | Where-Object { $_.ref_kind -eq 'field' -and $_.signature -match 'sceneToLoad' })
+    Assert ($fCallees.Count -eq 1) "find_callees lists sceneToLoad once (deduped across sites)" "count=$($fCallees.Count)"
+    $slOps = @($fCallees[0].opcodes)
+    Assert (($slOps -contains 'ldsfld') -and ($slOps -contains 'stsfld')) "deduped field row carries both ldsfld + stsfld" "got $($slOps -join ',')"
+    Assert ($fCallees[0].occurrences -ge 2) "field callee occurrences counts both sites" "got $($fCallees[0].occurrences)"
+    # A callee row's token is addressable: feed it straight to decompile_by_token.
+    $addCallee = $mCallees | Where-Object { $_.signature -match 'AddOne' } | Select-Object -First 1
+    Assert ($addCallee.token -gt 0) "callee carries resolved MDToken"
+    $cbt = RpcText 'decompile_by_token' @{ token=$addCallee.token; assembly_name='TestIL' }
+    Assert ($cbt -match 'AddOne') "find_callees token feeds decompile_by_token"
+
+    # ----- step 21: find_overrides (dnSpy Analyze "Overridden By" / "Overrides") -----
+    Write-Host ""
+    Write-Host "[21] find_overrides overridden_by on BaseEntity.Attack"
+    $ob = Rpc 'find_overrides' @{ assembly_name='TestIL'; type_full_name='TestIL.BaseEntity'; method_name='Attack' }
+    $obTypes = @($ob.items | Where-Object { $_.assembly -eq 'TestIL' } | ForEach-Object { $_.type } | Sort-Object -Unique)
+    Assert (($obTypes -contains 'TestIL.Player') -and ($obTypes -contains 'TestIL.Enemy') -and ($obTypes -contains 'TestIL.Boss')) "overridden_by lists Player + Enemy + Boss (transitive)" "got $($obTypes -join ',')"
+    $bossOv = $ob.items | Where-Object { $_.type -eq 'TestIL.Boss' } | Select-Object -First 1
+    Assert ($bossOv -and $bossOv.method -eq 'Attack' -and $bossOv.token -gt 0) "override hit carries method + MDToken"
+
+    Write-Host ""
+    Write-Host "[21b] find_overrides overrides on Boss.Attack (walk up the base chain)"
+    $ov = Rpc 'find_overrides' @{ direction='overrides'; assembly_name='TestIL'; type_full_name='TestIL.Boss'; method_name='Attack' }
+    $ovTypes = @($ov.items | ForEach-Object { $_.type })
+    Assert ($ovTypes -contains 'TestIL.Enemy') "overrides finds Enemy.Attack (immediate base)" "got $($ovTypes -join ',')"
+    Assert ($ovTypes -contains 'TestIL.BaseEntity') "overrides finds BaseEntity.Attack (slot origin)"
+
+    Write-Host ""
+    Write-Host "[21c] find_overrides: non-virtual yields nothing; invalid direction errors"
+    $none = Rpc 'find_overrides' @{ assembly_name='TestIL'; type_full_name='TestIL.Simple'; method_name='AddOne' }
+    $noneHits = @($none.items | Where-Object { $_.assembly -eq 'TestIL' })
+    Assert ($noneHits.Count -eq 0) "non-virtual AddOne has no overrides" "count=$($noneHits.Count)"
+    $badDir = $null
+    try { Rpc 'find_overrides' @{ direction='sideways'; assembly_name='TestIL'; type_full_name='TestIL.BaseEntity'; method_name='Attack' } | Out-Null }
+    catch { $badDir = $_.Exception.Message }
+    Assert ($badDir -and ($badDir -match 'unknown direction')) "invalid direction errors with guidance" "got: $badDir"
 }
 finally
 {
