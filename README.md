@@ -6,7 +6,7 @@ Chinese / 中文说明: see [README.zh-CN.md](README.zh-CN.md).
 
 ## Features
 
-### MCP Tools (17 total)
+### MCP Tools (19 total)
 
 #### Analysis & navigation
 
@@ -20,6 +20,11 @@ Chinese / 中文说明: see [README.zh-CN.md](README.zh-CN.md).
 8. **search_types** — wildcard / substring type search across all assemblies
 9. **find_path_to_type** — BFS over fields/properties to connect two types
 10. **decompile_method** — decompile a method to C# (accepts `parameter_types` / `method_token` to disambiguate overloads)
+
+#### Cross-references (xref)
+
+1. **find_callers** — every method that *calls* a given method (call / callvirt / newobj / ldftn), across all assemblies. Each hit carries caller type/method, `MDToken`, opcode, IL index/offset
+2. **find_references** — every IL site referencing a `method` / `field` / `type` / `string` (`target_kind` selects), across all assemblies
 
 #### String literals
 

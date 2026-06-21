@@ -161,6 +161,89 @@ namespace dnSpy.Extension.MCP
                     }
                 },
                 new ToolInfo {
+                    Name = "find_callers",
+                    Description = "Cross-reference: find every method that CALLS a given method (call / callvirt / newobj / ldftn / ldvirtftn), across ALL loaded assemblies — callers routinely live in a different assembly than the target. Identify the target by assembly_name + type_full_name + method_name (with parameter_types or method_token to disambiguate overloads). Each hit returns the caller's type, method, MDToken (uint), signature, the call opcode, the resolved reference, and IL index/offset. Paginated (default page size 10).",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Assembly that declares the target method"
+                            },
+                            ["type_full_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Full name of the type that declares the target method"
+                            },
+                            ["method_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Name of the target method"
+                            },
+                            ["parameter_types"] = new Dictionary<string, object> {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object> { ["type"] = "string" },
+                                ["description"] = "Optional. Fully-qualified parameter type names to disambiguate an overloaded target."
+                            },
+                            ["method_token"] = new Dictionary<string, object> {
+                                ["type"] = "integer",
+                                ["description"] = "Optional. MDToken.Raw (uint) of the target method. Takes precedence over parameter_types."
+                            },
+                            ["cursor"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional cursor for pagination (opaque token from previous response). Default page size: 10 results."
+                            }
+                        },
+                        ["required"] = new List<string> { "assembly_name", "type_full_name", "method_name" }
+                    }
+                },
+                new ToolInfo {
+                    Name = "find_references",
+                    Description = "Cross-reference: find every IL site that references a target across ALL loaded assemblies. target_kind selects what to look for: 'method' (any call / ldftn / ldtoken of the method), 'field' (any ldfld/stfld/ldsfld/stsfld/ldflda + ldtoken), 'type' (newarr / castclass / isinst / box / ldtoken / etc.), or 'string' (ldstr matching a query). Provide the identity fields for the chosen kind (see properties). Each hit returns the referencing type, method, MDToken (uint), signature, opcode, the resolved reference, and IL index/offset. Paginated (default page size 10). For methods, find_callers is the call-only specialization.",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["target_kind"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["enum"] = new List<string> { "method", "field", "type", "string" },
+                                ["description"] = "What to look for: method | field | type | string."
+                            },
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Assembly declaring the target (required for method/field/type)."
+                            },
+                            ["type_full_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Full name of the target type (for target_kind=type) or the type declaring the target member (method/field)."
+                            },
+                            ["method_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Target method name (target_kind=method)."
+                            },
+                            ["parameter_types"] = new Dictionary<string, object> {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object> { ["type"] = "string" },
+                                ["description"] = "Optional. Disambiguate an overloaded target method."
+                            },
+                            ["method_token"] = new Dictionary<string, object> {
+                                ["type"] = "integer",
+                                ["description"] = "Optional. MDToken.Raw (uint) of the target method. Takes precedence over parameter_types."
+                            },
+                            ["field_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Target field name (target_kind=field)."
+                            },
+                            ["query"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "String to match (target_kind=string). Case-insensitive substring, or '*' wildcard anchored to the whole literal."
+                            },
+                            ["cursor"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional cursor for pagination (opaque token from previous response). Default page size: 10 results."
+                            }
+                        },
+                        ["required"] = new List<string> { "target_kind" }
+                    }
+                },
+                new ToolInfo {
                     Name = "search_string_literals",
                     Description = "Reverse-lookup: find every method that emits a given string literal (ldstr) across loaded assemblies. Answers \"which method uses this string?\" — the #1 question in game/Unity RE where logic is wired by string keys (PlayerPrefs keys, scene names, save tokens). Query is a case-insensitive substring by default; use * for wildcards anchored to the whole string (e.g. 'SAVE*'). Optionally restrict to one assembly. Each hit returns the string value, declaring type, method name + MDToken (uint), full signature, and IL index/offset. Paginated (default page size 10).",
                     InputSchema = new Dictionary<string, object> {
@@ -509,6 +592,8 @@ namespace dnSpy.Extension.MCP
                         "get_type_info" => GetTypeInfo(arguments),
                         "decompile_method" => DecompileMethod(arguments),
                         "search_types" => SearchTypes(arguments),
+                        "find_callers" => FindCallers(arguments),
+                        "find_references" => FindReferences(arguments),
                         "search_string_literals" => SearchStringLiterals(arguments),
                         "list_string_constants" => ListStringConstants(arguments),
                         "generate_bepinex_plugin" => GenerateBepInExPlugin(arguments),

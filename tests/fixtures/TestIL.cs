@@ -45,4 +45,20 @@ namespace TestIL
 
         public static string NoStrings(int x) => (x + 1).ToString();
     }
+
+    // Cross-reference coverage for find_callers / find_references.
+    // - sceneToLoad is read by GetScene (ldsfld) and written by SetScene (stsfld).
+    // - CallsAddOne calls Simple.AddOne (find_callers target).
+    // - RefType emits ldtoken of Simple (type reference).
+    public static class Refs
+    {
+        public static int sceneToLoad;
+
+        public static void SetScene(int v) { sceneToLoad = v; }
+        public static int GetScene() => sceneToLoad;
+
+        public static int CallsAddOne() => Simple.AddOne(5);
+        public static string CallsSave() => StringKeys.SaveGame();
+        public static System.Type RefType() => typeof(Simple);
+    }
 }

@@ -289,6 +289,39 @@ try
     $loadOnly = Rpc 'list_string_constants' @{ assembly_name='TestIL'; type_full_name='TestIL.StringKeys'; method_name='LoadGame' }
     $loadValues = @($loadOnly.items | ForEach-Object { $_.value } | Sort-Object)
     Assert (($loadValues.Count -eq 2) -and ($loadValues -contains 'SAVEFILE') -and ($loadValues -contains 'TheFinaleUmbra')) "method scope returns only LoadGame's strings" "got $($loadValues -join ',')"
+
+    # ----- step 15: find_callers -----
+    Write-Host ""
+    Write-Host "[15] find_callers Simple.AddOne — who calls it"
+    $callers = Rpc 'find_callers' @{ assembly_name='TestIL'; type_full_name='TestIL.Simple'; method_name='AddOne' }
+    $addOneCallers = @($callers.items | Where-Object { $_.caller_type -eq 'TestIL.Refs' -and $_.caller_method -eq 'CallsAddOne' })
+    Assert ($addOneCallers.Count -eq 1) "Refs.CallsAddOne found as a caller of AddOne" "count=$($addOneCallers.Count)"
+    Assert ($addOneCallers[0].opcode -eq 'call' -and $addOneCallers[0].caller_token -gt 0) "caller carries opcode + MDToken"
+    # A never-called method yields no callers.
+    $noCallers = Rpc 'find_callers' @{ assembly_name='TestIL'; type_full_name='TestIL.Refs'; method_name='CallsAddOne' }
+    $selfCallers = @($noCallers.items | Where-Object { $_.caller_assembly -eq 'TestIL' })
+    Assert ($selfCallers.Count -eq 0) "CallsAddOne has no in-assembly callers" "count=$($selfCallers.Count)"
+
+    # ----- step 16: find_references (field / type / string) -----
+    Write-Host ""
+    Write-Host "[16] find_references field sceneToLoad — read + write sites"
+    $fieldRefs = Rpc 'find_references' @{ target_kind='field'; assembly_name='TestIL'; type_full_name='TestIL.Refs'; field_name='sceneToLoad' }
+    $refMethods = @($fieldRefs.items | Where-Object { $_.caller_assembly -eq 'TestIL' } | ForEach-Object { $_.caller_method } | Sort-Object -Unique)
+    Assert (($refMethods -contains 'GetScene') -and ($refMethods -contains 'SetScene')) "sceneToLoad referenced by GetScene (read) + SetScene (write)" "got $($refMethods -join ',')"
+    $opcodes = @($fieldRefs.items | Where-Object { $_.caller_assembly -eq 'TestIL' } | ForEach-Object { $_.opcode } | Sort-Object -Unique)
+    Assert (($opcodes -contains 'ldsfld') -and ($opcodes -contains 'stsfld')) "both ldsfld and stsfld observed" "got $($opcodes -join ',')"
+
+    Write-Host ""
+    Write-Host "[16b] find_references type Simple — ldtoken site"
+    $typeRefs = Rpc 'find_references' @{ target_kind='type'; assembly_name='TestIL'; type_full_name='TestIL.Simple' }
+    $typeRefMethods = @($typeRefs.items | Where-Object { $_.caller_assembly -eq 'TestIL' } | ForEach-Object { $_.caller_method })
+    Assert ($typeRefMethods -contains 'RefType') "Simple referenced via typeof() in Refs.RefType" "got $($typeRefMethods -join ',')"
+
+    Write-Host ""
+    Write-Host "[16c] find_references string (parity with search_string_literals)"
+    $strRefs = Rpc 'find_references' @{ target_kind='string'; query='TheFinaleUmbra' }
+    $strHits = @($strRefs.items | Where-Object { $_.reference -eq 'TheFinaleUmbra' })
+    Assert ($strHits.Count -eq 1 -and $strHits[0].caller_method -eq 'LoadGame') "string xref resolves to LoadGame" "count=$($strHits.Count)"
 }
 finally
 {

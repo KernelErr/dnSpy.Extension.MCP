@@ -6,7 +6,7 @@ English: see [README.md](README.md).
 
 ## 功能
 
-### MCP 工具（共 17 个）
+### MCP 工具（共 19 个）
 
 #### 分析与导航
 
@@ -20,6 +20,11 @@ English: see [README.md](README.md).
 8. **search_types** — 跨程序集按通配符或子串搜索类型
 9. **find_path_to_type** — 基于字段/属性对两个类型做 BFS 路径搜索
 10. **decompile_method** — 将方法反编译为 C#（可通过 `parameter_types` / `method_token` 精确区分重载）
+
+#### 交叉引用（xref）
+
+1. **find_callers** — 跨所有程序集查找"谁调用了某方法"（call / callvirt / newobj / ldftn）。每条命中含调用者类型/方法、`MDToken`、opcode、IL index/offset
+2. **find_references** — 跨所有程序集查找引用某 `method` / `field` / `type` / `string` 的所有 IL 位置（由 `target_kind` 选择目标种类）
 
 #### 字符串字面量
 
