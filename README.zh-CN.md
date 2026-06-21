@@ -9,7 +9,7 @@ English: see [README.md](README.md).
 几分钟内从零到"让 Claude 分析你的程序集"：
 
 1. **跑起来。** 从 [Releases](https://github.com/KernelErr/dnSpy.Extension.MCP/releases) 下载对应系统的一体化压缩包（MCP 扩展已经打包在里面），解压到任意位置，运行 `dnSpy.exe`。*已经装了 dnSpy？改用[仅插件](#安装) 的 DLL。*
-2. **启用服务器。** 在 dnSpy 里：**Edit → Settings → MCP Server** → 勾选 **Enable Server** → **OK**。记下该页显示的 **Port**——并查看 **Server Log** 面板里实际绑定的端口（你设的端口被占用时会自动顺延到下一个空闲端口）。下文用 `<端口>` 指代它。验证一下：用浏览器打开 `http://localhost:<端口>/`（会看到状态页），或执行 `curl http://localhost:<端口>/health`。
+2. **启用服务器。** 在 dnSpy 里：**视图 → 选项 → MCP Server** → 勾选 **Enable Server** → **OK**。记下该页显示的 **Port**——并查看 **Server Log** 面板里实际绑定的端口（你设的端口被占用时会自动顺延到下一个空闲端口）。下文用 `<端口>` 指代它。验证一下：用浏览器打开 `http://localhost:<端口>/`（会看到状态页），或执行 `curl http://localhost:<端口>/health`。
 3. **加载目标。** 打开你要分析的程序集（**File → Open**，或把 DLL 拖进 dnSpy）——例如 Unity 游戏的 `Assembly-CSharp.dll`。工具操作的是树里已加载的内容。
 4. **接入 AI 客户端。** 以 Claude Code 为例（把 `<端口>` 换成第 2 步里的端口）：
    ```bash
@@ -156,7 +156,7 @@ curl -s -X POST http://localhost:3000/ -H "Content-Type: application/json" -d '{
 
 1. 下载并解压到任意目录。
 2. 双击 `dnSpy.exe`。
-3. 打开**编辑 → 设置 → MCP Server**，勾选 **Enable Server**，点击确定。
+3. 打开**视图 → 选项 → MCP Server**，勾选 **Enable Server**，点击确定。
 
 搞定。如果你已经装好了 dnSpy、只想拿插件，参考下面的"仅插件"方式。
 
@@ -208,7 +208,7 @@ cp bin/Release/net10.0-windows/dnSpy.Extension.MCP.x.dll \
 
 ## 配置
 
-配置入口：**编辑 → 设置 → MCP Server**
+配置入口：**视图 → 选项 → MCP Server**
 
 - **Enable Server** — 勾选并应用即可即时启动/停止 HTTP 服务器。
 - **Port** — 首选 TCP 端口（默认 `3000`）。若端口已被占用，扩展会自动尝试 `port + 1`，最多 20 次，并在日志中记录最终绑定的端口。查看 Server Log 面板确认实际端口。
