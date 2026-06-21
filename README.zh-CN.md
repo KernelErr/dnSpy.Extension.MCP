@@ -4,6 +4,23 @@
 
 English: see [README.md](README.md).
 
+## 快速开始
+
+几分钟内从零到"让 Claude 分析你的程序集"：
+
+1. **跑起来。** 从 [Releases](https://github.com/KernelErr/dnSpy.Extension.MCP/releases) 下载对应系统的一体化压缩包（MCP 扩展已经打包在里面），解压到任意位置，运行 `dnSpy.exe`。*已经装了 dnSpy？改用[仅插件](#安装) 的 DLL。*
+2. **启用服务器。** 在 dnSpy 里：**Edit → Settings → MCP Server** → 勾选 **Enable Server** → **OK**。记下该页显示的 **Port**——并查看 **Server Log** 面板里实际绑定的端口（你设的端口被占用时会自动顺延到下一个空闲端口）。下文用 `<端口>` 指代它。验证一下：用浏览器打开 `http://localhost:<端口>/`（会看到状态页），或执行 `curl http://localhost:<端口>/health`。
+3. **加载目标。** 打开你要分析的程序集（**File → Open**，或把 DLL 拖进 dnSpy）——例如 Unity 游戏的 `Assembly-CSharp.dll`。工具操作的是树里已加载的内容。
+4. **接入 AI 客户端。** 以 Claude Code 为例（把 `<端口>` 换成第 2 步里的端口）：
+   ```bash
+   claude mcp add --transport http dnspy http://localhost:<端口>
+   ```
+   其他客户端（Claude Desktop、codex、MCP Inspector）见[客户端配置](#客户端配置)。
+5. **开问。** 直接用自然语言问，例如：
+   > *"在 Assembly-CSharp 里找出所有用到字符串 `SAVEFILE` 的方法，然后把反编译后的 `SaveGame` 方法给我看。"*
+
+   Claude 会自己挑合适的工具（`search_string_literals` → `find_references` → `decompile_method`）。完整能力见[功能](#功能)。
+
 ## 功能
 
 ### MCP 工具（共 23 个）

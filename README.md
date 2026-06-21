@@ -4,6 +4,23 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) extension for
 
 Chinese / 中文说明: see [README.zh-CN.md](README.zh-CN.md).
 
+## Quick Start
+
+From zero to "ask Claude about your assembly" in a few minutes:
+
+1. **Get it running.** Download the all-in-one zip for your system from [Releases](https://github.com/KernelErr/dnSpy.Extension.MCP/releases) (the MCP extension is already bundled inside), unzip anywhere, and run `dnSpy.exe`. *Already have dnSpy installed? Use the [plugin-only](#plugin-only-for-users-who-already-have-dnspy-installed) DLL instead.*
+2. **Enable the server.** In dnSpy: **Edit → Settings → MCP Server** → tick **Enable Server** → **OK**. Note the **Port** shown on that page — and check the **Server Log** pane for the port it actually bound to (it falls back to the next free port if yours is taken). Call that `<port>` below. Sanity check: open `http://localhost:<port>/` in a browser (you'll see a status page) or run `curl http://localhost:<port>/health`.
+3. **Load your target.** Open the assembly you want to analyze (**File → Open**, or drag a DLL onto dnSpy) — e.g. a Unity game's `Assembly-CSharp.dll`. The tools operate on whatever is loaded in the tree.
+4. **Connect your AI client.** For Claude Code (replace `<port>` with the one from step 2):
+   ```bash
+   claude mcp add --transport http dnspy http://localhost:<port>
+   ```
+   Other clients (Claude Desktop, codex, MCP Inspector) — see [Client configuration](#client-configuration).
+5. **Ask.** Just talk to it in natural language, e.g.:
+   > *"In Assembly-CSharp, find every method that uses the string `SAVEFILE`, then show me the decompiled `SaveGame` method."*
+
+   Claude picks the right tools (`search_string_literals` → `find_references` → `decompile_method`) on its own. See [Features](#features) for everything it can do.
+
 ## Features
 
 ### MCP Tools (23 total)
