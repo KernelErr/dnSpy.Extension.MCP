@@ -110,11 +110,11 @@ namespace dnSpy.Extension.MCP {
 		void StartHttpListenerServer() {
 			Task.Run(() => {
 				try {
-					httpListener = new HttpListener();
-					var prefix = $"http://{settings.Host}:{actualPort}/";
-					httpListener.Prefixes.Add(prefix);
-					httpListener.Start();
-					settings.Log($"MCP server started on {settings.Host}:{actualPort}");
+					httpListener = StartBoundListener(actualPort);
+					if (httpListener == null) {
+						settings.Log("ERROR: HttpListener could not bind any loopback prefix.");
+						return;
+					}
 
 					while (!cts!.Token.IsCancellationRequested) {
 						try {
@@ -134,6 +134,65 @@ namespace dnSpy.Extension.MCP {
 					httpListener = null;
 				}
 			}, cts!.Token);
+		}
+
+		/// <summary>
+		/// Creates and Start()s an <see cref="HttpListener"/> bound to loopback. We register BOTH the
+		/// <c>localhost</c> hostname and the literal loopback IPs (<c>127.0.0.1</c>, <c>[::1]</c>) rather
+		/// than only the configured host. http.sys matches a request's Host header against the exact
+		/// registered prefix string, so a <c>localhost</c>-only prefix makes it reject a request to
+		/// <c>http://127.0.0.1:port/</c> at the kernel level with "HTTP 400 - Invalid Hostname" before
+		/// our code ever runs. All three loopback prefixes bind without admin; only the <c>+</c>/<c>*</c>
+		/// wildcards need elevation. Falls back to fewer prefixes if a bind fails (e.g. IPv6 disabled).
+		/// </summary>
+		HttpListener? StartBoundListener(int port) {
+			foreach (var prefixes in BuildLoopbackPrefixSets(settings.Host, port)) {
+				var listener = new HttpListener();
+				foreach (var p in prefixes)
+					listener.Prefixes.Add(p);
+				try {
+					listener.Start();
+					settings.Log($"MCP server started, listening on: {string.Join(", ", prefixes)}");
+					return listener;
+				}
+				catch (Exception ex) {
+					settings.Log($"Could not bind [{string.Join(", ", prefixes)}]: {ex.GetType().Name}: {ex.Message}");
+					try { listener.Close(); } catch { /* ignore */ }
+				}
+			}
+			return null;
+		}
+
+		/// <summary>
+		/// Candidate prefix sets to try, most-complete first. For a loopback host we want
+		/// <c>localhost</c> AND both loopback IP literals so clients can reach the server by name or by
+		/// IP. A non-loopback host (an explicit IP, or <c>+</c>/<c>*</c> for LAN access) is honored
+		/// verbatim and may require admin.
+		/// </summary>
+		static IEnumerable<List<string>> BuildLoopbackPrefixSets(string host, int port) {
+			bool isLoopback =
+				string.IsNullOrEmpty(host) ||
+				host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+				host == "127.0.0.1" ||
+				host == "::1" || host == "[::1]";
+
+			if (!isLoopback) {
+				yield return new List<string> { $"http://{host}:{port}/" };
+				yield break;
+			}
+
+			yield return new List<string> {
+				$"http://localhost:{port}/",
+				$"http://127.0.0.1:{port}/",
+				$"http://[::1]:{port}/",
+			};
+			// IPv6 loopback may not be bindable (IPv6 disabled on the box) — drop it.
+			yield return new List<string> {
+				$"http://localhost:{port}/",
+				$"http://127.0.0.1:{port}/",
+			};
+			// Last resort: the original localhost-only behavior.
+			yield return new List<string> { $"http://localhost:{port}/" };
 		}
 
 		void HandleHttpRequest(HttpListenerContext context) {
@@ -196,6 +255,14 @@ namespace dnSpy.Extension.MCP {
 
 					if (httpMethod == "GET" && acceptsEventStream) {
 						HandleStreamableHttpGet(context);
+						return;
+					}
+
+					if (httpMethod == "GET") {
+						// A plain browser/curl GET (no event-stream Accept) is not an MCP client.
+						// Serve a human-readable status page instead of a 404 so opening it in a
+						// browser to check the server is alive actually works.
+						HandleStatusPage(context);
 						return;
 					}
 
@@ -454,6 +521,32 @@ namespace dnSpy.Extension.MCP {
 				settings.Log($"Streamable HTTP session closed by DELETE: {sessionId}");
 			context.Response.StatusCode = 200;
 			context.Response.ContentLength64 = 0;
+			context.Response.Close();
+		}
+
+		/// <summary>
+		/// Serves a small human-readable status page for a plain browser GET on the root. The MCP
+		/// endpoints only answer POST (JSON-RPC) and SSE, so a browser would otherwise get a bare
+		/// 404 and look broken; this confirms the server is up and points at the real endpoints.
+		/// </summary>
+		void HandleStatusPage(HttpListenerContext context) {
+			var html =
+				"<!doctype html><html><head><meta charset=\"utf-8\"><title>dnSpy MCP Server</title></head>" +
+				"<body style=\"font-family:system-ui,sans-serif;max-width:42rem;margin:3rem auto;line-height:1.5\">" +
+				"<h1>dnSpy MCP Server</h1>" +
+				$"<p><b>Status:</b> running on port {actualPort}.</p>" +
+				"<p>This is a Model Context Protocol (JSON-RPC) endpoint, not a website — there is nothing " +
+				"to browse here. Point an MCP client at it instead.</p>" +
+				"<ul>" +
+				"<li><code>GET /health</code> — liveness probe (<a href=\"/health\">/health</a>)</li>" +
+				"<li><code>POST /</code> — JSON-RPC (plain HTTP or MCP Streamable HTTP)</li>" +
+				"<li><code>GET /sse</code> — legacy MCP SSE transport</li>" +
+				"</ul></body></html>";
+			var buffer = Encoding.UTF8.GetBytes(html);
+			context.Response.StatusCode = 200;
+			context.Response.ContentType = "text/html; charset=utf-8";
+			context.Response.ContentLength64 = buffer.Length;
+			context.Response.OutputStream.Write(buffer, 0, buffer.Length);
 			context.Response.Close();
 		}
 

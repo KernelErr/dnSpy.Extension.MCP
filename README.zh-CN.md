@@ -241,9 +241,12 @@ url = "http://localhost:3000"
 
 一次性请求/响应：向 `/` POST 一个 JSON-RPC 消息（`Accept` 头**不包含** `text/event-stream`），从同一 HTTP 响应体读取结果。适合 `curl` 调试或只会说纯 HTTP 的客户端。
 
+服务器会绑定所有回环地址，因此 `localhost`、`127.0.0.1`、`[::1]` 都能访问。用**浏览器**打开 `http://localhost:<端口>/` 会看到一个简单的状态页（根路径只说 JSON-RPC/SSE，所以浏览器 GET 返回这个页面而不是 404）。
+
 ```bash
 curl -s http://localhost:3000/health
 # {"status":"ok","service":"dnSpy MCP Server"}
+curl -s http://127.0.0.1:3000/health   # 同样可用（不止 localhost）
 
 curl -s -X POST http://localhost:3000/ \
   -H "Content-Type: application/json" \

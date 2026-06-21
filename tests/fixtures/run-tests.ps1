@@ -519,6 +519,19 @@ try
     # The implementor's token is addressable like any other.
     $crateSrc = RpcText 'decompile_by_token' @{ token=$crateHit.token; assembly_name='TestIL' }
     Assert ($crateSrc -match 'TakeDamage') "interface-impl token feeds decompile_by_token"
+
+    # ----- step 22: loopback binding — 127.0.0.1 must work, browser GET / must not 404 -----
+    Write-Host ""
+    Write-Host "[22] server reachable via 127.0.0.1 + browser status page"
+    # Before the multi-prefix fix, a localhost-only HttpListener prefix made http.sys reject
+    # http://127.0.0.1:<port>/ at the kernel level with HTTP 400 "Invalid Hostname".
+    $ipHealth = $null
+    try { $ipHealth = Invoke-WebRequest -Uri "http://127.0.0.1:$($script:Port)/health" -UseBasicParsing -TimeoutSec 5 } catch { $ipHealth = $_.Exception }
+    Assert ($ipHealth.StatusCode -eq 200) "GET http://127.0.0.1:<port>/health returns 200 (not 400 Invalid Hostname)" "got: $ipHealth"
+    # A plain browser GET on the root should get a status page, not a bare 404.
+    $rootPage = $null
+    try { $rootPage = Invoke-WebRequest -Uri "http://localhost:$($script:Port)/" -UseBasicParsing -TimeoutSec 5 } catch { $rootPage = $_.Exception }
+    Assert ($rootPage.StatusCode -eq 200 -and $rootPage.Content -match 'MCP') "browser GET / returns a 200 status page (not 404)" "got: $rootPage"
 }
 finally
 {

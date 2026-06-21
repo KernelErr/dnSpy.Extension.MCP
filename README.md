@@ -241,9 +241,12 @@ url = "http://localhost:3000"
 
 One-shot request/response — POST JSON-RPC to `/` without `text/event-stream` in `Accept` and read the response from the same HTTP response body. Useful for quick `curl` testing and for MCP clients that only speak plain HTTP.
 
+The server binds all loopback identities, so `localhost`, `127.0.0.1`, and `[::1]` all work. Opening `http://localhost:<port>/` in a **browser** shows a small status page (the root only speaks JSON-RPC/SSE, so a browser GET returns that page rather than a 404).
+
 ```bash
 curl -s http://localhost:3000/health
 # {"status":"ok","service":"dnSpy MCP Server"}
+curl -s http://127.0.0.1:3000/health   # also works (not just localhost)
 
 curl -s -X POST http://localhost:3000/ \
   -H "Content-Type: application/json" \
