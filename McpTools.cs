@@ -161,6 +161,63 @@ namespace dnSpy.Extension.MCP
                     }
                 },
                 new ToolInfo {
+                    Name = "search_string_literals",
+                    Description = "Reverse-lookup: find every method that emits a given string literal (ldstr) across loaded assemblies. Answers \"which method uses this string?\" — the #1 question in game/Unity RE where logic is wired by string keys (PlayerPrefs keys, scene names, save tokens). Query is a case-insensitive substring by default; use * for wildcards anchored to the whole string (e.g. 'SAVE*'). Optionally restrict to one assembly. Each hit returns the string value, declaring type, method name + MDToken (uint), full signature, and IL index/offset. Paginated (default page size 10).",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["query"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "String to search for. Case-insensitive substring by default; '*' is a wildcard matching the whole literal (e.g. 'Player*Score', '*SAVEFILE*')."
+                            },
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional. Restrict the search to a single assembly. Omit to sweep all loaded assemblies."
+                            },
+                            ["cursor"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional cursor for pagination (opaque token from previous response). Default page size: 10 results."
+                            }
+                        },
+                        ["required"] = new List<string> { "query" }
+                    }
+                },
+                new ToolInfo {
+                    Name = "list_string_constants",
+                    Description = "List all string literals (ldstr) in a type, or in a single method. Type scope includes nested types (compiler-generated closures often hold the interesting keys). Pass method_name (with parameter_types or method_token to disambiguate overloads) to narrow to one method. Each entry returns the string value, declaring type, method name + MDToken (uint), full signature, and IL index/offset. Paginated (default page size 10).",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Name of the assembly"
+                            },
+                            ["type_full_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Full name of the type"
+                            },
+                            ["method_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional. Restrict to a single method. If omitted, lists ldstr across the type and its nested types."
+                            },
+                            ["parameter_types"] = new Dictionary<string, object> {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object> { ["type"] = "string" },
+                                ["description"] = "Optional. Fully-qualified parameter type names to disambiguate an overloaded method_name."
+                            },
+                            ["method_token"] = new Dictionary<string, object> {
+                                ["type"] = "integer",
+                                ["description"] = "Optional. MDToken.Raw (uint) to disambiguate an overloaded method_name. Takes precedence over parameter_types."
+                            },
+                            ["cursor"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional cursor for pagination (opaque token from previous response). Default page size: 10 results."
+                            }
+                        },
+                        ["required"] = new List<string> { "assembly_name", "type_full_name" }
+                    }
+                },
+                new ToolInfo {
                     Name = "generate_bepinex_plugin",
                     Description = "Generate a BepInEx plugin template with hooks for specified methods",
                     InputSchema = new Dictionary<string, object> {
@@ -452,6 +509,8 @@ namespace dnSpy.Extension.MCP
                         "get_type_info" => GetTypeInfo(arguments),
                         "decompile_method" => DecompileMethod(arguments),
                         "search_types" => SearchTypes(arguments),
+                        "search_string_literals" => SearchStringLiterals(arguments),
+                        "list_string_constants" => ListStringConstants(arguments),
                         "generate_bepinex_plugin" => GenerateBepInExPlugin(arguments),
                         "get_type_fields" => GetTypeFields(arguments),
                         "get_type_property" => GetTypeProperty(arguments),

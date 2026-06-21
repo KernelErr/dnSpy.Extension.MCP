@@ -6,7 +6,7 @@ English: see [README.md](README.md).
 
 ## 功能
 
-### MCP 工具（共 15 个）
+### MCP 工具（共 17 个）
 
 #### 分析与导航
 
@@ -20,6 +20,11 @@ English: see [README.md](README.md).
 8. **search_types** — 跨程序集按通配符或子串搜索类型
 9. **find_path_to_type** — 基于字段/属性对两个类型做 BFS 路径搜索
 10. **decompile_method** — 将方法反编译为 C#（可通过 `parameter_types` / `method_token` 精确区分重载）
+
+#### 字符串字面量
+
+1. **search_string_literals** — 反查：在所有程序集中查找"哪个方法发出了这个字符串（`ldstr`）"。游戏/Unity 逆向中逻辑全靠字符串 key（PlayerPrefs 键、场景名、存档令牌）串联，这是头号刚需。默认大小写不敏感子串匹配，`*` 为整串通配（如 `SAVE*`），可选只在单个程序集内搜。每条命中返回字符串值、所在类型、方法名 + `MDToken`、完整签名、IL index/offset
+2. **list_string_constants** — 列出某个类型（含嵌套类型）或单个方法内的所有 `ldstr` 字符串字面量
 
 #### IL 查看与编辑（0.1.3 新增）
 

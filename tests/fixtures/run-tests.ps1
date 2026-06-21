@@ -259,6 +259,36 @@ try
     Write-Host "[12] cleanup revert (drop snapshot)"
     $reverted2 = Rpc 'revert_method_il' @{ assembly_name='TestIL'; type_full_name='TestIL.Simple'; method_name='AddOne' }
     Assert ($reverted2.reverted -eq $true) "second revert works"
+
+    # ----- step 13: search_string_literals (reverse lookup) -----
+    Write-Host ""
+    Write-Host "[13] search_string_literals SAVEFILE — find every method using it"
+    $hits = Rpc 'search_string_literals' @{ query='SAVEFILE'; assembly_name='TestIL' }
+    $saveHits = $hits.items | Where-Object { $_.value -eq 'SAVEFILE' }
+    Assert ($saveHits.Count -eq 2) "SAVEFILE found in 2 methods (SaveGame + LoadGame)" "got $($saveHits.Count)"
+    $methodsWithSave = @($saveHits | ForEach-Object { $_.method } | Sort-Object -Unique)
+    Assert (($methodsWithSave -contains 'SaveGame') -and ($methodsWithSave -contains 'LoadGame')) "both SaveGame and LoadGame returned" "got $($methodsWithSave -join ',')"
+    Assert ($saveHits[0].method_token -gt 0 -and $saveHits[0].type -eq 'TestIL.StringKeys') "hit carries type + MDToken"
+    # Unique key resolves to exactly one method.
+    $umbra = Rpc 'search_string_literals' @{ query='TheFinaleUmbra' }
+    $umbraHits = @($umbra.items | Where-Object { $_.value -eq 'TheFinaleUmbra' })
+    Assert ($umbraHits.Count -eq 1 -and $umbraHits[0].method -eq 'LoadGame') "TheFinaleUmbra resolves to LoadGame only" "count=$($umbraHits.Count)"
+    # Wildcard match anchored to the whole literal.
+    $wild = Rpc 'search_string_literals' @{ query='PlayerPrefs*'; assembly_name='TestIL' }
+    $wildHits = @($wild.items | Where-Object { $_.value -eq 'PlayerPrefs.Score' })
+    Assert ($wildHits.Count -eq 1) "wildcard 'PlayerPrefs*' matches PlayerPrefs.Score" "count=$($wildHits.Count)"
+
+    # ----- step 14: list_string_constants (per-type / per-method) -----
+    Write-Host ""
+    Write-Host "[14] list_string_constants on TestIL.StringKeys"
+    $allStrings = Rpc 'list_string_constants' @{ assembly_name='TestIL'; type_full_name='TestIL.StringKeys' }
+    $values = @($allStrings.items | ForEach-Object { $_.value })
+    Assert (($values -contains 'SAVEFILE') -and ($values -contains 'PlayerPrefs.Score') -and ($values -contains 'TheFinaleUmbra')) "type-level listing returns all keys" "got $($values -join ',')"
+    Assert (($values | Where-Object { $_ -eq 'SAVEFILE' }).Count -eq 2) "SAVEFILE listed twice (once per method)"
+    # Method scope narrows to a single method.
+    $loadOnly = Rpc 'list_string_constants' @{ assembly_name='TestIL'; type_full_name='TestIL.StringKeys'; method_name='LoadGame' }
+    $loadValues = @($loadOnly.items | ForEach-Object { $_.value } | Sort-Object)
+    Assert (($loadValues.Count -eq 2) -and ($loadValues -contains 'SAVEFILE') -and ($loadValues -contains 'TheFinaleUmbra')) "method scope returns only LoadGame's strings" "got $($loadValues -join ',')"
 }
 finally
 {

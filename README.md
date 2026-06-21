@@ -6,7 +6,7 @@ Chinese / 中文说明: see [README.zh-CN.md](README.zh-CN.md).
 
 ## Features
 
-### MCP Tools (15 total)
+### MCP Tools (17 total)
 
 #### Analysis & navigation
 
@@ -20,6 +20,11 @@ Chinese / 中文说明: see [README.zh-CN.md](README.zh-CN.md).
 8. **search_types** — wildcard / substring type search across all assemblies
 9. **find_path_to_type** — BFS over fields/properties to connect two types
 10. **decompile_method** — decompile a method to C# (accepts `parameter_types` / `method_token` to disambiguate overloads)
+
+#### String literals
+
+1. **search_string_literals** — reverse-lookup a string across assemblies: "which method emits this `ldstr`?" (substring or `*` wildcard, optional single-assembly scope). Each hit carries declaring type, method, `MDToken`, signature, IL index/offset
+2. **list_string_constants** — list every `ldstr` in a type (incl. nested types) or a single method
 
 #### IL viewing & editing (new in 0.1.3)
 
