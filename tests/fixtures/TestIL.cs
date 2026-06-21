@@ -62,6 +62,18 @@ namespace TestIL
         public static System.Type RefType() => typeof(Simple);
     }
 
+    // Property + event coverage for search_members kinds (the fixture otherwise has only
+    // methods and fields). Health/Title are properties; OnDied is an event (invoked from Die
+    // so the compiler-generated backing field isn't flagged unused).
+    public class Members
+    {
+        public int Health { get; set; }
+        public static string Title { get; set; }
+
+        public event System.Action OnDied;
+        public void Die() => OnDied?.Invoke();
+    }
+
     // Base-type hierarchy for list_types base_type filtering (incl. transitive: Boss : Enemy : BaseEntity).
     public abstract class BaseEntity { }
     public class Player : BaseEntity { }

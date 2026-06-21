@@ -6,7 +6,7 @@ Chinese / 中文说明: see [README.zh-CN.md](README.zh-CN.md).
 
 ## Features
 
-### MCP Tools (20 total)
+### MCP Tools (21 total)
 
 #### Analysis & navigation
 
@@ -18,9 +18,10 @@ Chinese / 中文说明: see [README.zh-CN.md](README.zh-CN.md).
 6. **get_type_fields** — filter fields by wildcard pattern (e.g. `*Bonus*`)
 7. **get_type_property** — detailed info about a property including getter/setter
 8. **search_types** — wildcard / substring type search; `assembly_name` to scope to one assembly, `names_only` / `page_size` to control output. Matches nested compiler-generated types too (e.g. `*<Awake>d__*`)
-9. **find_path_to_type** — BFS over fields/properties to connect two types
-10. **decompile_method** — decompile a method to C# (accepts `parameter_types` / `method_token` to disambiguate overloads). Nested types are addressable (`Outer/Inner`, `.`/`+`/`/` all accepted), so you can decompile a state machine's `MoveNext` directly. For async/iterator kickoffs, when the decompiler can't inline the state machine back into `await`/`yield` (common on Unity output) the raw `MoveNext` body is appended automatically (`include_state_machine=false` to opt out)
-11. **decompile_by_token** — decompile a method (or type) by `MDToken` alone, no type name needed — ideal for tokens straight from xref / string-search results (`assembly_name` recommended; tokens are per-module). Same async/iterator rescue as `decompile_method`
+9. **search_members** — wildcard / substring search for *members* (methods / fields / properties / events) by name across all assemblies (or one via `assembly_name`); `kinds` filters by member kind. The member-level counterpart of `search_types` (together they are dnSpy's Search Assemblies / Ctrl+Shift+K). Use it when you have a bare member name from decompiled code but don't know its declaring type: each hit carries `declaring_type`, `member_kind`, full `signature`, `token` (`MDToken`), `is_static` / `is_public` — feed `token` straight to `decompile_by_token`, or `declaring_type` + name to `find_callers` / `find_references`
+10. **find_path_to_type** — BFS over fields/properties to connect two types
+11. **decompile_method** — decompile a method to C# (accepts `parameter_types` / `method_token` to disambiguate overloads). Nested types are addressable (`Outer/Inner`, `.`/`+`/`/` all accepted), so you can decompile a state machine's `MoveNext` directly. For async/iterator kickoffs, when the decompiler can't inline the state machine back into `await`/`yield` (common on Unity output) the raw `MoveNext` body is appended automatically (`include_state_machine=false` to opt out)
+12. **decompile_by_token** — decompile a method (or type) by `MDToken` alone, no type name needed — ideal for tokens straight from xref / string-search / member-search results (`assembly_name` recommended; tokens are per-module). Same async/iterator rescue as `decompile_method`
 
 #### Cross-references (xref)
 

@@ -210,6 +210,41 @@ namespace dnSpy.Extension.MCP
                     }
                 },
                 new ToolInfo {
+                    Name = "search_members",
+                    Description = "Search for MEMBERS (methods / fields / properties / events) by name across all loaded assemblies (or one via assembly_name) — the member counterpart of search_types, together covering dnSpy's Ctrl+Shift+K 'Search Assemblies'. Use this when you have a bare member name (e.g. from decompiled code) but DON'T know its declaring type: each hit returns assembly, declaring_type, member_kind, name, full signature, the MDToken (uint), is_static and is_public. Feed token straight into decompile_by_token, or declaring_type + name into find_callers / find_references to see how the symbol is used. Paginated (default page size 10; override with page_size); names_only returns a compact list of signatures.",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["query"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Member name to search for. Without '*', case-insensitive substring (e.g. 'Save' finds SaveGame, LoadSaveData). With '*', a wildcard anchored to the whole member name (e.g. 'get_*' finds property getters, '*Health' for a suffix)."
+                            },
+                            ["kinds"] = new Dictionary<string, object> {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object> { ["type"] = "string" },
+                                ["description"] = "Optional. Which member kinds to include — any of: method, field, property, event. Omit for all four. (Property/event accessor methods like get_X also appear under 'method'.)"
+                            },
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional. Restrict the search to a single assembly (e.g. 'Assembly-CSharp'). Omit to search all loaded assemblies — recommended for common names that would otherwise match thousands of framework members."
+                            },
+                            ["names_only"] = new Dictionary<string, object> {
+                                ["type"] = "boolean",
+                                ["description"] = "Default false. Return a flat list of member signature strings instead of per-member metadata — much cheaper in tokens."
+                            },
+                            ["page_size"] = new Dictionary<string, object> {
+                                ["type"] = "integer",
+                                ["description"] = "Optional page size for the first request (default 10, max 1000)."
+                            },
+                            ["cursor"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional cursor for pagination (opaque token from previous response)."
+                            }
+                        },
+                        ["required"] = new List<string> { "query" }
+                    }
+                },
+                new ToolInfo {
                     Name = "decompile_by_token",
                     Description = "Decompile a method (or type) to C# by MDToken alone — no type name needed. Ideal when you have a token from find_callers / find_references / search_string_literals / list_methods but not the declaring type (also the simplest way to reach nested compiler-generated state machines). Tokens are per-module: pass assembly_name to be exact; without it the token must be unambiguous across loaded assemblies. Method tokens get the same async/iterator state-machine rescue as decompile_method.",
                     InputSchema = new Dictionary<string, object> {
@@ -664,6 +699,7 @@ namespace dnSpy.Extension.MCP
                         "decompile_method" => DecompileMethod(arguments),
                         "decompile_by_token" => DecompileByToken(arguments),
                         "search_types" => SearchTypes(arguments),
+                        "search_members" => SearchMembers(arguments),
                         "find_callers" => FindCallers(arguments),
                         "find_references" => FindReferences(arguments),
                         "search_string_literals" => SearchStringLiterals(arguments),
@@ -1210,6 +1246,177 @@ namespace dnSpy.Extension.MCP
                 .ToList();
 
             return CreatePaginatedResponse(results, offset, pageSize);
+        }
+
+        // Member kinds search_members understands. Property/event accessors also appear in
+        // type.Methods, so asking for "method" + "property" can surface both get_X and X — that
+        // mirrors dnSpy's own Search Assemblies behaviour.
+        static readonly HashSet<string> MemberKindNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "method", "field", "property", "event",
+        };
+
+        /// <summary>
+        /// Global member search — the missing half of dnSpy's Ctrl+Shift+K. search_types finds types
+        /// by name; this finds methods / fields / properties / events by name across every loaded
+        /// module (or one assembly via assembly_name), regardless of which type declares them. This is
+        /// the bridge the analysis tools needed: you usually only have a bare member name from
+        /// decompiled code and don't know its declaring type, so find_callers / find_references —
+        /// which require assembly + type + name — were unreachable. Each row carries assembly,
+        /// declaring_type, the MDToken (raw, feed straight to decompile_by_token), and the full
+        /// signature, so a hit plugs directly into the xref / decompile tools.
+        /// </summary>
+        CallToolResult SearchMembers(Dictionary<string, object>? arguments)
+        {
+            if (arguments == null || !arguments.TryGetValue("query", out var queryObj))
+                throw new ArgumentException("query is required");
+            var query = queryObj.ToString() ?? string.Empty;
+            if (string.IsNullOrEmpty(query))
+                throw new ArgumentException("query must not be empty");
+            var matches = BuildStringMatcher(query);
+
+            // kinds: which member categories to include. Default = all four. Validate up front so a
+            // typo ("methods") fails loudly instead of silently matching nothing.
+            var kindsRaw = ReadStringArray(arguments, "kinds");
+            HashSet<string> kinds;
+            if (kindsRaw == null || kindsRaw.Count == 0)
+                kinds = MemberKindNames;
+            else
+            {
+                kinds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var k in kindsRaw)
+                {
+                    var kk = (k ?? string.Empty).Trim();
+                    if (!MemberKindNames.Contains(kk))
+                        throw new ArgumentException($"unknown member kind '{k}' (expected any of: method, field, property, event)");
+                    kinds.Add(kk);
+                }
+            }
+
+            string? cursor = null;
+            if (arguments.TryGetValue("cursor", out var cursorObj))
+                cursor = cursorObj.ToString();
+
+            var namesOnly = ReadOptionalBool(arguments, "names_only") ?? false;
+            var (offset, pageSize) = ResolvePageSize(cursor, arguments);
+
+            // Optional assembly scope: a bare name like "Update" matches thousands of framework members,
+            // so restrict to one assembly when given (same rationale as search_types).
+            var assemblyName = ReadOptionalString(arguments, "assembly_name");
+            IEnumerable<TypeDef> typeUniverse;
+            if (assemblyName != null)
+            {
+                var assembly = FindAssemblyByName(assemblyName);
+                if (assembly == null)
+                    throw new ArgumentException($"Assembly not found: {assemblyName}");
+                typeUniverse = assembly.Modules.SelectMany(m => m.GetTypes());
+            }
+            else
+            {
+                typeUniverse = documentTreeView.GetAllModuleNodes()
+                    .SelectMany(m => m.Document?.ModuleDef?.GetTypes() ?? Enumerable.Empty<TypeDef>());
+            }
+
+            bool wantMethods = kinds.Contains("method");
+            bool wantFields = kinds.Contains("field");
+            bool wantProperties = kinds.Contains("property");
+            bool wantEvents = kinds.Contains("event");
+
+            var hits = new List<MemberHit>();
+            // GetTypes() is recursive, so members of nested / compiler-generated state machines match too.
+            foreach (var type in typeUniverse)
+            {
+                var assemblyDisplay = type.Module?.Assembly?.Name.String ?? "Unknown";
+                var typeFullName = type.FullName;
+
+                if (wantMethods)
+                {
+                    foreach (var m in type.Methods)
+                    {
+                        if (!matches(m.Name.String))
+                            continue;
+                        hits.Add(new MemberHit(assemblyDisplay, typeFullName, "method", m.Name.String,
+                            m.FullName, m.MDToken.Raw, m.IsStatic, m.IsPublic));
+                    }
+                }
+                if (wantFields)
+                {
+                    foreach (var f in type.Fields)
+                    {
+                        if (!matches(f.Name.String))
+                            continue;
+                        hits.Add(new MemberHit(assemblyDisplay, typeFullName, "field", f.Name.String,
+                            f.FullName, f.MDToken.Raw, f.IsStatic, f.IsPublic));
+                    }
+                }
+                if (wantProperties)
+                {
+                    foreach (var p in type.Properties)
+                    {
+                        if (!matches(p.Name.String))
+                            continue;
+                        var accessor = p.GetMethod ?? p.SetMethod;
+                        hits.Add(new MemberHit(assemblyDisplay, typeFullName, "property", p.Name.String,
+                            p.FullName, p.MDToken.Raw, accessor?.IsStatic ?? false, accessor?.IsPublic ?? false));
+                    }
+                }
+                if (wantEvents)
+                {
+                    foreach (var e in type.Events)
+                    {
+                        if (!matches(e.Name.String))
+                            continue;
+                        var accessor = e.AddMethod ?? e.RemoveMethod ?? e.InvokeMethod;
+                        hits.Add(new MemberHit(assemblyDisplay, typeFullName, "event", e.Name.String,
+                            e.FullName, e.MDToken.Raw, accessor?.IsStatic ?? false, accessor?.IsPublic ?? false));
+                    }
+                }
+            }
+
+            if (namesOnly)
+                return CreatePaginatedResponse(hits.Select(h => h.signature).ToList(), offset, pageSize);
+
+            var results = hits
+                .Select(h => (object)new
+                {
+                    assembly = h.assembly,
+                    declaring_type = h.declaring_type,
+                    member_kind = h.member_kind,
+                    name = h.name,
+                    signature = h.signature,
+                    token = h.token,
+                    is_static = h.is_static,
+                    is_public = h.is_public,
+                })
+                .ToList();
+
+            return CreatePaginatedResponse(results, offset, pageSize);
+        }
+
+        // Lightweight carrier so the projection (full row vs names_only) is computed once per match.
+        readonly struct MemberHit
+        {
+            public readonly string assembly;
+            public readonly string declaring_type;
+            public readonly string member_kind;
+            public readonly string name;
+            public readonly string signature;
+            public readonly uint token;
+            public readonly bool is_static;
+            public readonly bool is_public;
+
+            public MemberHit(string assembly, string declaringType, string memberKind, string name,
+                string signature, uint token, bool isStatic, bool isPublic)
+            {
+                this.assembly = assembly;
+                declaring_type = declaringType;
+                member_kind = memberKind;
+                this.name = name;
+                this.signature = signature;
+                this.token = token;
+                is_static = isStatic;
+                is_public = isPublic;
+            }
         }
 
         CallToolResult GenerateBepInExPlugin(Dictionary<string, object>? arguments)

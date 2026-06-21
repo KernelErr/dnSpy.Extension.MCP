@@ -415,6 +415,54 @@ try
     $mnTok = ($smMethods.items | Where-Object { $_.name -eq 'MoveNext' } | Select-Object -First 1).token
     $mnByTok = RpcText 'decompile_by_token' @{ token=$mnTok; assembly_name='TestIL' }
     Assert ($mnByTok -match '100') "decompile_by_token reaches <DoAsync>d__ MoveNext (counter += 100)"
+
+    # ----- step 19: search_members (global member search — the missing half of Ctrl+Shift+K) -----
+    Write-Host ""
+    Write-Host "[19] search_members method by name (no declaring type known)"
+    $mAddOne = Rpc 'search_members' @{ query='AddOne'; kinds=@('method'); assembly_name='TestIL' }
+    $aoHits = @($mAddOne.items | Where-Object { $_.name -eq 'AddOne' })
+    Assert ($aoHits.Count -eq 1) "AddOne found by member search" "count=$($aoHits.Count)"
+    Assert ($aoHits[0].declaring_type -eq 'TestIL.Simple' -and $aoHits[0].member_kind -eq 'method') "hit carries declaring_type + member_kind"
+    Assert ($aoHits[0].is_static -eq $true -and $aoHits[0].is_public -eq $true) "hit carries is_static/is_public"
+    Assert ($aoHits[0].token -gt 0) "hit carries MDToken"
+    # The whole point: a bare-name hit is addressable. Feed its token straight to decompile_by_token.
+    $aoSrc = RpcText 'decompile_by_token' @{ token=$aoHits[0].token; assembly_name='TestIL' }
+    Assert ($aoSrc -match 'AddOne') "search_members token feeds decompile_by_token"
+
+    Write-Host ""
+    Write-Host "[19b] search_members field / property / event kinds"
+    $mField = Rpc 'search_members' @{ query='sceneToLoad'; kinds=@('field'); assembly_name='TestIL' }
+    $fHits = @($mField.items | Where-Object { $_.name -eq 'sceneToLoad' })
+    Assert ($fHits.Count -eq 1 -and $fHits[0].declaring_type -eq 'TestIL.Refs' -and $fHits[0].member_kind -eq 'field') "field sceneToLoad found" "count=$($fHits.Count)"
+    $mProp = Rpc 'search_members' @{ query='Health'; kinds=@('property'); assembly_name='TestIL' }
+    $pHits = @($mProp.items | Where-Object { $_.name -eq 'Health' })
+    Assert ($pHits.Count -eq 1 -and $pHits[0].member_kind -eq 'property' -and $pHits[0].declaring_type -eq 'TestIL.Members') "property Health found" "count=$($pHits.Count)"
+    $mEvent = Rpc 'search_members' @{ query='OnDied'; kinds=@('event'); assembly_name='TestIL' }
+    $eHits = @($mEvent.items | Where-Object { $_.name -eq 'OnDied' })
+    Assert ($eHits.Count -eq 1 -and $eHits[0].member_kind -eq 'event') "event OnDied found" "count=$($eHits.Count)"
+
+    Write-Host ""
+    Write-Host "[19c] kinds filter narrows results"
+    # 'OnDied' as an event also has a compiler-generated backing field + add_/remove_ methods.
+    # Default (all kinds) surfaces more than one member_kind; kinds=[event] keeps only the event.
+    $mAll = Rpc 'search_members' @{ query='OnDied'; assembly_name='TestIL' }
+    $allKinds = @($mAll.items | ForEach-Object { $_.member_kind } | Sort-Object -Unique)
+    Assert ($allKinds.Count -ge 2) "default kinds surfaces event + backing field/accessors" "kinds=$($allKinds -join ',')"
+    $onlyEvent = @($mEvent.items | Where-Object { $_.member_kind -ne 'event' })
+    Assert ($onlyEvent.Count -eq 0) "kinds=[event] excludes the backing field and accessor methods"
+
+    Write-Host ""
+    Write-Host "[19d] wildcard + names_only + invalid kind"
+    $mWild = Rpc 'search_members' @{ query='*Game'; kinds=@('method'); assembly_name='TestIL' }
+    $wildNames = @($mWild.items | ForEach-Object { $_.name } | Sort-Object -Unique)
+    Assert (($wildNames -contains 'SaveGame') -and ($wildNames -contains 'LoadGame')) "wildcard '*Game' matches SaveGame + LoadGame" "got $($wildNames -join ',')"
+    Assert ($wildNames -notcontains 'AddOne') "wildcard '*Game' excludes AddOne"
+    $mNames = Rpc 'search_members' @{ query='AddOne'; kinds=@('method'); assembly_name='TestIL'; names_only=$true }
+    Assert (@($mNames.items | Where-Object { $_ -match 'AddOne' }).Count -ge 1) "names_only returns signature strings"
+    $badKind = $null
+    try { Rpc 'search_members' @{ query='AddOne'; kinds=@('methods') } | Out-Null }
+    catch { $badKind = $_.Exception.Message }
+    Assert ($badKind -and ($badKind -match 'unknown member kind')) "invalid kind errors with guidance" "got: $badKind"
 }
 finally
 {
