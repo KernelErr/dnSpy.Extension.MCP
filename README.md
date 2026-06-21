@@ -1,8 +1,5 @@
 # dnSpy MCP Extension
 
-[![Build](https://github.com/KernelErr/dnSpy.Extension.MCP/actions/workflows/build.yml/badge.svg)](https://github.com/KernelErr/dnSpy.Extension.MCP/actions/workflows/build.yml)
-[![Release](https://github.com/KernelErr/dnSpy.Extension.MCP/actions/workflows/release.yml/badge.svg)](https://github.com/KernelErr/dnSpy.Extension.MCP/actions/workflows/release.yml)
-
 A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) extension for [dnSpyEx](https://github.com/dnSpyEx/dnSpy) that exposes .NET assembly **analysis** and **IL-editing** tools to AI assistants like Claude.
 
 Chinese / 中文说明: see [README.zh-CN.md](README.zh-CN.md).
@@ -378,7 +375,7 @@ The server automatically falls back to `port + 1` (up to 20 tries). Look for `Po
 
 - Ensure you cloned dnSpyEx with `--recursive` (submodules must be initialized).
 - Run `dotnet restore` in the dnSpyEx repo root.
-- Requires .NET 10 SDK (previous dnSpy versions used .NET 8; `DnSpyCommon.props` is the source of truth).
+- Requires .NET 10 SDK (`DnSpyCommon.props` is the source of truth).
 
 ## License
 

@@ -1,8 +1,5 @@
 # dnSpy MCP 扩展
 
-[![Build](https://github.com/KernelErr/dnSpy.Extension.MCP/actions/workflows/build.yml/badge.svg)](https://github.com/KernelErr/dnSpy.Extension.MCP/actions/workflows/build.yml)
-[![Release](https://github.com/KernelErr/dnSpy.Extension.MCP/actions/workflows/release.yml/badge.svg)](https://github.com/KernelErr/dnSpy.Extension.MCP/actions/workflows/release.yml)
-
 一个用于 [dnSpyEx](https://github.com/dnSpyEx/dnSpy) 的 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 扩展，向 Claude 等 AI 助手暴露 .NET 程序集的**分析能力**与 **IL 编辑能力**。
 
 English: see [README.md](README.md).
@@ -378,7 +375,7 @@ git push origin v1.0.0
 
 - 确认 dnSpyEx 用 `--recursive` 克隆，且子模块已初始化。
 - 在 dnSpyEx 仓库根目录先执行 `dotnet restore`。
-- 需要 .NET 10 SDK（更早的 dnSpy 版本用 .NET 8；`DnSpyCommon.props` 是权威依据）。
+- 需要 .NET 10 SDK（`DnSpyCommon.props` 是权威依据）。
 
 ## License
 
