@@ -123,7 +123,10 @@ if (Test-Path $pdb) { Copy-Item $pdb $extDeployDir -Force }
 # ----- step 4: launch dnSpy with the fixture preloaded -----
 Write-Host "[4] Launching dnSpy + loading $testDll"
 Set-McpPortInSettings $Port
-$dnSpyProc = Start-Process -FilePath $dnSpyExeFull -ArgumentList $testDll -PassThru
+# Quote the fixture path: Start-Process does not auto-quote -ArgumentList entries, so a
+# path containing spaces (e.g. C:\Users\Rui Li\...) would reach dnSpy split at the space
+# and the fixture would silently fail to load.
+$dnSpyProc = Start-Process -FilePath $dnSpyExeFull -ArgumentList "`"$testDll`"" -PassThru
 
 # Poll for /health on the configured port with +N fallback (McpServer's FindAvailablePort tries up to 20).
 $found = $false
