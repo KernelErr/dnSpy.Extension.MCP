@@ -366,6 +366,52 @@ try
     # Opt-out returns only the kickoff (no appended state machine).
     $asyncBare = RpcText 'decompile_method' @{ assembly_name='TestIL'; type_full_name='TestIL.Machines'; method_name='DoAsync'; include_state_machine=$false }
     Assert ($asyncBare -notmatch 'Raw compiler-generated state machine') "include_state_machine=false suppresses the appended MoveNext"
+
+    # ----- step 18: filtering / scoping / compact -----
+    Write-Host ""
+    Write-Host "[18] list_assemblies name_filter"
+    $asmFiltered = @(Rpc 'list_assemblies' @{ name_filter='TestIL' })
+    Assert ((@($asmFiltered | Where-Object { $_.Name -eq 'TestIL' }).Count -eq 1)) "name_filter keeps TestIL"
+    Assert ((@($asmFiltered | Where-Object { $_.Name -eq 'mscorlib' -or $_.Name -eq 'System' }).Count -eq 0)) "name_filter drops framework assemblies"
+
+    Write-Host ""
+    Write-Host "[18b] search_types scoped to one assembly"
+    $scoped = Rpc 'search_types' @{ query='*Simple*'; assembly_name='TestIL' }
+    Assert ((@($scoped.items | Where-Object { $_.AssemblyName -ne 'TestIL' }).Count -eq 0)) "scoped search returns only TestIL types"
+    Assert ((@($scoped.items | Where-Object { $_.FullName -eq 'TestIL.Simple' }).Count -eq 1)) "TestIL.Simple found in scope"
+
+    Write-Host ""
+    Write-Host "[18c] list_types names_only + page_size + base_type"
+    $namesOnly = Rpc 'list_types' @{ assembly_name='TestIL'; names_only=$true; page_size=50 }
+    Assert ($namesOnly.items -contains 'TestIL.Simple') "names_only returns FullName strings"
+    Assert ($namesOnly.returned_count -le 50) "page_size respected"
+    $subs = Rpc 'list_types' @{ assembly_name='TestIL'; base_type='BaseEntity'; names_only=$true; page_size=50 }
+    $subNames = @($subs.items)
+    Assert (($subNames -contains 'TestIL.Player') -and ($subNames -contains 'TestIL.Enemy') -and ($subNames -contains 'TestIL.Boss')) "base_type lists transitive subclasses (incl. Boss : Enemy : BaseEntity)" "got $($subNames -join ',')"
+    Assert ($subNames -notcontains 'TestIL.Simple') "base_type excludes non-subclasses"
+
+    Write-Host ""
+    Write-Host "[18d] get_type_info compact + members_filter"
+    $gi = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name='TestIL.Simple'; members_filter='Add*'; compact=$true }
+    $mnames = @($gi.Methods | ForEach-Object { $_.Name } | Sort-Object -Unique)
+    Assert (($mnames -contains 'Add') -and ($mnames -contains 'AddOne')) "members_filter returns Add/AddOne" "got $($mnames -join ',')"
+    Assert ($mnames -notcontains 'Greet') "members_filter excludes non-matching members"
+    Assert (@($gi.Methods)[0].PSObject.Properties.Name -notcontains 'Parameters') "compact drops per-parameter detail"
+
+    Write-Host ""
+    Write-Host "[18e] decompile_by_token (method, by token alone)"
+    $simpleMethods = Rpc 'list_methods' @{ assembly_name='TestIL'; type_full_name='TestIL.Simple' }
+    $addOneTok = ($simpleMethods.items | Where-Object { $_.name -eq 'AddOne' } | Select-Object -First 1).token
+    Assert ($addOneTok -gt 0) "got AddOne token from list_methods"
+    $byTok = RpcText 'decompile_by_token' @{ token=$addOneTok; assembly_name='TestIL' }
+    Assert ($byTok -match 'AddOne') "decompile_by_token resolves AddOne without a type name"
+
+    Write-Host ""
+    Write-Host "[18f] decompile_by_token reaches nested state machine MoveNext"
+    $smMethods = Rpc 'list_methods' @{ assembly_name='TestIL'; type_full_name=$asyncSM.FullName }
+    $mnTok = ($smMethods.items | Where-Object { $_.name -eq 'MoveNext' } | Select-Object -First 1).token
+    $mnByTok = RpcText 'decompile_by_token' @{ token=$mnTok; assembly_name='TestIL' }
+    Assert ($mnByTok -match '100') "decompile_by_token reaches <DoAsync>d__ MoveNext (counter += 100)"
 }
 finally
 {

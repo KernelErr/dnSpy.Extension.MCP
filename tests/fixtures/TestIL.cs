@@ -62,6 +62,12 @@ namespace TestIL
         public static System.Type RefType() => typeof(Simple);
     }
 
+    // Base-type hierarchy for list_types base_type filtering (incl. transitive: Boss : Enemy : BaseEntity).
+    public abstract class BaseEntity { }
+    public class Player : BaseEntity { }
+    public class Enemy : BaseEntity { }
+    public class Boss : Enemy { }
+
     // Compiler-generated state-machine coverage for nested-type addressing + decompile rescue.
     // DoCoroutine -> nested iterator state machine <DoCoroutine>d__N : IEnumerator (MoveNext).
     // DoAsync     -> nested async state machine     <DoAsync>d__N : IAsyncStateMachine (MoveNext).

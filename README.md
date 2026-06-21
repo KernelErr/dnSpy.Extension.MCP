@@ -6,20 +6,21 @@ Chinese / 中文说明: see [README.zh-CN.md](README.zh-CN.md).
 
 ## Features
 
-### MCP Tools (19 total)
+### MCP Tools (20 total)
 
 #### Analysis & navigation
 
-1. **list_assemblies** — list all loaded assemblies with metadata
+1. **list_assemblies** — list all loaded assemblies with metadata (`name_filter` substring/wildcard to cut through hundreds of Unity framework modules)
 2. **get_assembly_info** — detailed info about a specific assembly (paginated namespaces)
-3. **list_types** — all types in an assembly or namespace (paginated); includes nested + compiler-generated state machines by default (`is_nested` / `is_compiler_generated` flags; `include_nested=false` for top-level only)
-4. **get_type_info** — fields, properties, and paginated methods for a type (methods include `token` / `MDToken` for unambiguous identification)
+3. **list_types** — all types in an assembly or namespace; paginated (`page_size` override, `names_only` compact mode). Includes nested + compiler-generated state machines by default (`is_nested` / `is_compiler_generated` flags; `include_nested=false` for top-level only). `base_type` filters to (transitive) subclasses, e.g. `base_type='MonoBehaviour'`
+4. **get_type_info** — fields, properties, and paginated methods for a type (methods include `token` / `MDToken`). `compact` drops per-member detail; `members_filter` keeps only matching member names (e.g. `*Save*`)
 5. **list_methods** — methods of a type with `token` + `parameter_types` per entry, paginated
 6. **get_type_fields** — filter fields by wildcard pattern (e.g. `*Bonus*`)
 7. **get_type_property** — detailed info about a property including getter/setter
-8. **search_types** — wildcard / substring type search across all assemblies; matches nested compiler-generated types too (e.g. `*<Awake>d__*`)
+8. **search_types** — wildcard / substring type search; `assembly_name` to scope to one assembly, `names_only` / `page_size` to control output. Matches nested compiler-generated types too (e.g. `*<Awake>d__*`)
 9. **find_path_to_type** — BFS over fields/properties to connect two types
 10. **decompile_method** — decompile a method to C# (accepts `parameter_types` / `method_token` to disambiguate overloads). Nested types are addressable (`Outer/Inner`, `.`/`+`/`/` all accepted), so you can decompile a state machine's `MoveNext` directly. For async/iterator kickoffs, when the decompiler can't inline the state machine back into `await`/`yield` (common on Unity output) the raw `MoveNext` body is appended automatically (`include_state_machine=false` to opt out)
+11. **decompile_by_token** — decompile a method (or type) by `MDToken` alone, no type name needed — ideal for tokens straight from xref / string-search results (`assembly_name` recommended; tokens are per-module). Same async/iterator rescue as `decompile_method`
 
 #### Cross-references (xref)
 
@@ -31,7 +32,7 @@ Chinese / 中文说明: see [README.zh-CN.md](README.zh-CN.md).
 1. **search_string_literals** — reverse-lookup a string across assemblies: "which method emits this `ldstr`?" (substring or `*` wildcard, optional single-assembly scope). Each hit carries declaring type, method, `MDToken`, signature, IL index/offset
 2. **list_string_constants** — list every `ldstr` in a type (incl. nested types) or a single method
 
-#### IL viewing & editing (new in 0.1.3)
+#### IL viewing & editing
 
 1. **get_method_il** — instructions (index, offset, opcode, operand) + locals + exception handlers + body flags
 2. **patch_method_il** — ordered `replace` / `insert` / `delete` / `set_init_locals` edits; snapshot-on-first-patch
@@ -78,7 +79,7 @@ Each instruction's operand is a single tagged string; the same grammar is used b
 | `arg:<idx>` | `arg:1` | `ldarg*`, `starg*` |
 | *(empty)* | `""` | no operand (`ldarg.0`, `add`, `ret`, …) |
 
-`calli` / `InlineSig` is not supported in 0.1.3.
+`calli` / `InlineSig` is not supported.
 
 ### End-to-end: patch a constant and persist
 
@@ -119,7 +120,7 @@ Reload the saved DLL in a fresh process and `AddOne(10)` returns **`51`** instea
 - **No Ctrl+Z.** `patch_method_il` does not route through dnSpy's undo stack. Use `revert_method_il` — the snapshot is taken the first time a given method is patched, and dropped after revert or after a successful save.
 - **dnSpy's in-memory view is not refreshed after save.** Reopen the assembly in dnSpy to see the saved state in the running instance.
 - **GAC paths are refused.** Saving `mscorlib` etc. returns a `-32602` error.
-- **Instruction-level only.** Adding / removing locals or exception handlers is out of scope for 0.1.3; `get_method_il` exposes them read-only.
+- **Instruction-level only.** Adding / removing locals or exception handlers is out of scope; `get_method_il` exposes them read-only.
 
 ## Installation
 

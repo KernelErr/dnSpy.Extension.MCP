@@ -42,10 +42,15 @@ namespace dnSpy.Extension.MCP
             return new List<ToolInfo> {
                 new ToolInfo {
                     Name = "list_assemblies",
-                    Description = "List all loaded assemblies in dnSpy",
+                    Description = "List all loaded assemblies in dnSpy. Unity titles load hundreds of framework modules; pass name_filter (substring or '*' wildcard) to narrow, e.g. 'Assembly-CSharp'.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
-                        ["properties"] = new Dictionary<string, object>(),
+                        ["properties"] = new Dictionary<string, object> {
+                            ["name_filter"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional. Case-insensitive substring, or '*' wildcard anchored to the whole name (e.g. 'Assembly-CSharp', '*Firstpass')."
+                            }
+                        },
                         ["required"] = new List<string>()
                     }
                 },
@@ -69,7 +74,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "list_types",
-                    Description = "List all types in an assembly or namespace. Supports pagination with default page size of 10 types.",
+                    Description = "List all types in an assembly or namespace. Paginated (default page size 10; override with page_size). Use names_only for a compact list of FullName strings, and base_type to list only (transitive) subclasses of a base — e.g. base_type='MonoBehaviour' lists all Unity components.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -81,13 +86,25 @@ namespace dnSpy.Extension.MCP
                                 ["type"] = "string",
                                 ["description"] = "Optional namespace filter"
                             },
+                            ["base_type"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional. Only include types whose base chain contains this (case-insensitive substring of a base type FullName), e.g. 'MonoBehaviour', 'UnityEngine.MonoBehaviour', 'ScriptableObject'."
+                            },
+                            ["names_only"] = new Dictionary<string, object> {
+                                ["type"] = "boolean",
+                                ["description"] = "Default false. Return a flat list of type FullName strings instead of per-type metadata — much cheaper in tokens."
+                            },
+                            ["page_size"] = new Dictionary<string, object> {
+                                ["type"] = "integer",
+                                ["description"] = "Optional page size for the first request (default 10, max 1000). Follow-up pages keep it via the cursor."
+                            },
                             ["include_nested"] = new Dictionary<string, object> {
                                 ["type"] = "boolean",
                                 ["description"] = "Default true. Include nested types — including compiler-generated async/iterator state machines (e.g. GameOver/<Awake>d__63). Set false for top-level types only. Each entry carries is_nested / is_compiler_generated / declaring_type."
                             },
                             ["cursor"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Optional cursor for pagination (opaque token from previous response). Default page size: 10 types."
+                                ["description"] = "Optional cursor for pagination (opaque token from previous response)."
                             }
                         },
                         ["required"] = new List<string> { "assembly_name" }
@@ -95,7 +112,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "get_type_info",
-                    Description = "Get detailed information about a specific type including its members. First request returns all fields/properties and paginated methods. Subsequent requests (with cursor) return only paginated methods to reduce token usage.",
+                    Description = "Get detailed information about a specific type including its members. First request returns all fields/properties and paginated methods. Subsequent requests (with cursor) return only paginated methods. Use compact=true to drop per-member detail (name+signature+token only) and members_filter to return only members whose name matches a pattern (e.g. '*Save*') — both cut token cost sharply on large types.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -107,9 +124,21 @@ namespace dnSpy.Extension.MCP
                                 ["type"] = "string",
                                 ["description"] = "Full name of the type including namespace"
                             },
+                            ["compact"] = new Dictionary<string, object> {
+                                ["type"] = "boolean",
+                                ["description"] = "Default false. Return only name + signature + token per method, and name + type per field/property. Much cheaper than the full per-member detail."
+                            },
+                            ["members_filter"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional. Only include methods/fields/properties whose name matches (case-insensitive substring, or '*' wildcard anchored to the whole name), e.g. '*Save*'."
+                            },
+                            ["page_size"] = new Dictionary<string, object> {
+                                ["type"] = "integer",
+                                ["description"] = "Optional page size for methods on the first request (default 10, max 1000)."
+                            },
                             ["cursor"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Optional cursor for pagination of methods (opaque token from previous response). Default page size: 10 methods."
+                                ["description"] = "Optional cursor for pagination of methods (opaque token from previous response)."
                             }
                         },
                         ["required"] = new List<string> { "assembly_name", "type_full_name" }
@@ -152,7 +181,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "search_types",
-                    Description = "Search for types by name across all loaded assemblies. Supports pagination with default page size of 10 results.",
+                    Description = "Search for types by name. Defaults to all loaded assemblies — pass assembly_name to scope to one (e.g. 'Assembly-CSharp') so framework types don't drown game types. Matches nested compiler-generated types too. Paginated (default page size 10; override with page_size). Use names_only for a compact FullName-string list.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -160,12 +189,46 @@ namespace dnSpy.Extension.MCP
                                 ["type"] = "string",
                                 ["description"] = "Search query. Wildcards (*) match against FullName (namespace + type name). Recommended patterns: '*TypeName' for suffix (e.g., '*Controller' finds MyNamespace.PlayerController), '*.Keyword*' for types containing keyword, 'Full.Namespace.Path.*' for specific namespace. Without wildcards, performs case-insensitive substring matching (e.g., 'Controller' finds all types with 'Controller' in name)."
                             },
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional. Restrict the search to a single assembly. Omit to search all loaded assemblies."
+                            },
+                            ["names_only"] = new Dictionary<string, object> {
+                                ["type"] = "boolean",
+                                ["description"] = "Default false. Return a flat list of type FullName strings instead of per-type metadata — much cheaper in tokens."
+                            },
+                            ["page_size"] = new Dictionary<string, object> {
+                                ["type"] = "integer",
+                                ["description"] = "Optional page size for the first request (default 10, max 1000)."
+                            },
                             ["cursor"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Optional cursor for pagination (opaque token from previous response). Default page size: 10 results."
+                                ["description"] = "Optional cursor for pagination (opaque token from previous response)."
                             }
                         },
                         ["required"] = new List<string> { "query" }
+                    }
+                },
+                new ToolInfo {
+                    Name = "decompile_by_token",
+                    Description = "Decompile a method (or type) to C# by MDToken alone — no type name needed. Ideal when you have a token from find_callers / find_references / search_string_literals / list_methods but not the declaring type (also the simplest way to reach nested compiler-generated state machines). Tokens are per-module: pass assembly_name to be exact; without it the token must be unambiguous across loaded assemblies. Method tokens get the same async/iterator state-machine rescue as decompile_method.",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["token"] = new Dictionary<string, object> {
+                                ["type"] = "integer",
+                                ["description"] = "MDToken.Raw as uint (e.g. the method_token / caller_token returned by other tools)."
+                            },
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional. Module the token belongs to. Recommended — tokens are only unique within a module."
+                            },
+                            ["include_state_machine"] = new Dictionary<string, object> {
+                                ["type"] = "boolean",
+                                ["description"] = "Default true. For async/iterator methods, append the raw MoveNext body when the kickoff can't be reconstructed (same behavior as decompile_method)."
+                            }
+                        },
+                        ["required"] = new List<string> { "token" }
                     }
                 },
                 new ToolInfo {
@@ -594,11 +657,12 @@ namespace dnSpy.Extension.MCP
                 {
                     return toolName switch
                     {
-                        "list_assemblies" => ListAssemblies(),
+                        "list_assemblies" => ListAssemblies(arguments),
                         "get_assembly_info" => GetAssemblyInfo(arguments),
                         "list_types" => ListTypes(arguments),
                         "get_type_info" => GetTypeInfo(arguments),
                         "decompile_method" => DecompileMethod(arguments),
+                        "decompile_by_token" => DecompileByToken(arguments),
                         "search_types" => SearchTypes(arguments),
                         "find_callers" => FindCallers(arguments),
                         "find_references" => FindReferences(arguments),
@@ -635,12 +699,23 @@ namespace dnSpy.Extension.MCP
             });
         }
 
-        CallToolResult ListAssemblies()
+        CallToolResult ListAssemblies(Dictionary<string, object>? arguments)
         {
+            // Optional name filter: Unity titles load hundreds of framework modules; a dev usually
+            // only cares about Assembly-CSharp. Substring (case-insensitive) or '*' wildcard.
+            Func<string, bool> nameMatch = _ => true;
+            if (arguments != null && arguments.TryGetValue("name_filter", out var nfObj) && nfObj != null)
+            {
+                var nf = nfObj.ToString();
+                if (!string.IsNullOrWhiteSpace(nf))
+                    nameMatch = BuildStringMatcher(nf!);
+            }
+
             var assemblies = documentTreeView.GetAllModuleNodes()
                 .Select(m => m.Document?.AssemblyDef)
                 .Where(a => a != null)
                 .Distinct()
+                .Where(a => nameMatch(a!.Name.String))
                 .Select(a => new
                 {
                     Name = a!.Name.String,
@@ -743,15 +818,23 @@ namespace dnSpy.Extension.MCP
             // Default to including nested types so compiler-generated state machines (async /
             // iterator) are listed — they're where Unity coroutine / async logic actually lives.
             var includeNested = ReadOptionalBool(arguments, "include_nested") ?? true;
+            var namesOnly = ReadOptionalBool(arguments, "names_only") ?? false;
+            var baseTypeFilter = ReadOptionalString(arguments, "base_type");
 
-            var (offset, pageSize) = DecodeCursor(cursor);
+            var (offset, pageSize) = ResolvePageSize(cursor, arguments);
 
-            var allTypes = includeNested
-                ? assembly.Modules.SelectMany(m => m.GetTypes())
-                : assembly.Modules.SelectMany(m => m.Types);
+            var allTypes = (includeNested
+                    ? assembly.Modules.SelectMany(m => m.GetTypes())
+                    : assembly.Modules.SelectMany(m => m.Types))
+                .Where(t => string.IsNullOrEmpty(namespaceFilter) || t.Namespace == namespaceFilter)
+                .Where(t => baseTypeFilter == null || InheritsFrom(t, baseTypeFilter));
+
+            // names_only is the compact mode: a flat list of FullName strings instead of per-type
+            // metadata objects — far cheaper in tokens when you just want to scan 100+ type names.
+            if (namesOnly)
+                return CreatePaginatedResponse(allTypes.Select(t => t.FullName).ToList(), offset, pageSize);
 
             var types = allTypes
-                .Where(t => string.IsNullOrEmpty(namespaceFilter) || t.Namespace == namespaceFilter)
                 .Select(t => new
                 {
                     FullName = t.FullName,
@@ -790,7 +873,7 @@ namespace dnSpy.Extension.MCP
             if (arguments.TryGetValue("cursor", out var cursorObj))
                 cursor = cursorObj.ToString();
 
-            var (offset, pageSize) = DecodeCursor(cursor);
+            var (offset, pageSize) = ResolvePageSize(cursor, arguments);
 
             var assembly = FindAssemblyByName(assemblyName);
             if (assembly == null)
@@ -800,40 +883,59 @@ namespace dnSpy.Extension.MCP
             if (type == null)
                 throw new ArgumentException($"Type not found: {typeFullName}");
 
-            var allMethods = type.Methods.Select(m => new
-            {
-                Name = m.Name.String,
-                Token = m.MDToken.Raw,
-                Signature = m.FullName,
-                IsPublic = m.IsPublic,
-                IsStatic = m.IsStatic,
-                IsVirtual = m.IsVirtual,
-                IsAbstract = m.IsAbstract,
-                ReturnType = m.ReturnType?.FullName ?? "void",
-                ParameterTypes = m.MethodSig == null ? new List<string>() : m.MethodSig.Params.Select(t => t?.FullName ?? "?").ToList(),
-                Parameters = m.Parameters.Select(p => new
+            // compact: drop per-member detail (params/flags) and keep just name+signature+token —
+            // GetTypeInfo on a 60-field / many-method type is otherwise very heavy in tokens.
+            // members_filter: name pattern (substring or '*' wildcard) applied to methods/fields/
+            // properties so you can ask for just *Save* members instead of the whole type.
+            var compact = ReadOptionalBool(arguments, "compact") ?? false;
+            var memberFilterRaw = ReadOptionalString(arguments, "members_filter");
+            var memberMatch = memberFilterRaw == null ? (_ => true) : BuildStringMatcher(memberFilterRaw);
+
+            var allMethods = type.Methods.Where(m => memberMatch(m.Name.String)).Select(m => compact
+                ? (object)new
                 {
-                    Name = p.Name,
-                    Type = p.Type.FullName
-                }).ToList()
-            }).ToList();
+                    Name = m.Name.String,
+                    Token = m.MDToken.Raw,
+                    Signature = m.FullName
+                }
+                : new
+                {
+                    Name = m.Name.String,
+                    Token = m.MDToken.Raw,
+                    Signature = m.FullName,
+                    IsPublic = m.IsPublic,
+                    IsStatic = m.IsStatic,
+                    IsVirtual = m.IsVirtual,
+                    IsAbstract = m.IsAbstract,
+                    ReturnType = m.ReturnType?.FullName ?? "void",
+                    ParameterTypes = m.MethodSig == null ? new List<string>() : m.MethodSig.Params.Select(t => t?.FullName ?? "?").ToList(),
+                    Parameters = m.Parameters.Select(p => new
+                    {
+                        Name = p.Name,
+                        Type = p.Type.FullName
+                    }).ToList()
+                }).ToList();
 
-            var fields = type.Fields.Select(f => new
-            {
-                Name = f.Name.String,
-                Type = f.FieldType.FullName,
-                IsPublic = f.IsPublic,
-                IsStatic = f.IsStatic,
-                IsLiteral = f.IsLiteral
-            }).ToList();
+            var fields = type.Fields.Where(f => memberMatch(f.Name.String)).Select(f => compact
+                ? (object)new { Name = f.Name.String, Type = f.FieldType.FullName }
+                : new
+                {
+                    Name = f.Name.String,
+                    Type = f.FieldType.FullName,
+                    IsPublic = f.IsPublic,
+                    IsStatic = f.IsStatic,
+                    IsLiteral = f.IsLiteral
+                }).ToList();
 
-            var properties = type.Properties.Select(p => new
-            {
-                Name = p.Name.String,
-                Type = p.PropertySig?.RetType?.FullName ?? "unknown",
-                CanRead = p.GetMethod != null,
-                CanWrite = p.SetMethod != null
-            }).ToList();
+            var properties = type.Properties.Where(p => memberMatch(p.Name.String)).Select(p => compact
+                ? (object)new { Name = p.Name.String, Type = p.PropertySig?.RetType?.FullName ?? "unknown" }
+                : new
+                {
+                    Name = p.Name.String,
+                    Type = p.PropertySig?.RetType?.FullName ?? "unknown",
+                    CanRead = p.GetMethod != null,
+                    CanWrite = p.SetMethod != null
+                }).ToList();
 
             var methodsToReturn = allMethods.Skip(offset).Take(pageSize).ToList();
             var hasMore = offset + pageSize < allMethods.Count;
@@ -917,7 +1019,101 @@ namespace dnSpy.Extension.MCP
             var method = FindMethod(type, methodName, parameterTypes, methodToken);
             var includeStateMachine = ReadOptionalBool(arguments, "include_state_machine") ?? true;
 
-            // Decompile the method
+            return new CallToolResult
+            {
+                Content = new List<ToolContent> {
+                    new ToolContent { Text = DecompileMethodToText(method, includeStateMachine) }
+                }
+            };
+        }
+
+        CallToolResult DecompileByToken(Dictionary<string, object>? arguments)
+        {
+            if (arguments == null)
+                throw new ArgumentException("Arguments required");
+            var token = ReadOptionalUInt(arguments, "token")
+                ?? throw new ArgumentException("token is required (MDToken.Raw as uint, e.g. from find_callers / search_string_literals / list_methods)");
+            var includeStateMachine = ReadOptionalBool(arguments, "include_state_machine") ?? true;
+
+            string? assemblyName = null;
+            if (arguments.TryGetValue("assembly_name", out var asmObj) && asmObj != null)
+            {
+                assemblyName = asmObj.ToString();
+                if (string.IsNullOrWhiteSpace(assemblyName))
+                    assemblyName = null;
+            }
+
+            // Tokens are per-module. Resolve in the named assembly if given, else sweep every loaded
+            // module — our xref / string tools return (assembly, token) pairs, so the caller usually
+            // has the assembly, but token-only still works as long as it's unambiguous.
+            IEnumerable<ModuleDef> modules;
+            if (assemblyName != null)
+            {
+                var assembly = FindAssemblyByName(assemblyName);
+                if (assembly == null)
+                    throw new ArgumentException($"Assembly not found: {assemblyName}");
+                modules = assembly.Modules;
+            }
+            else
+            {
+                modules = documentTreeView.GetAllModuleNodes()
+                    .Select(m => m.Document?.ModuleDef)
+                    .Where(m => m != null)!
+                    .Cast<ModuleDef>();
+            }
+
+            var hits = new List<(ModuleDef module, object resolved)>();
+            foreach (var module in modules)
+            {
+                if (module is not ModuleDefMD md)
+                    continue;
+                object? resolved = null;
+                try { resolved = md.ResolveToken(token); } catch { /* not a valid token in this module */ }
+                if (resolved is MethodDef || resolved is TypeDef)
+                    hits.Add((module, resolved));
+            }
+
+            if (hits.Count == 0)
+                throw new ArgumentException($"No method or type with MDToken 0x{token:X8} in {(assemblyName ?? "any loaded assembly")}. Pass assembly_name if the token came from a specific module.");
+            if (hits.Count > 1)
+                throw new ArgumentException(
+                    $"MDToken 0x{token:X8} is ambiguous across {hits.Count} assemblies ({string.Join(", ", hits.Select(h => h.module.Assembly?.Name.String ?? "?"))}). Pass assembly_name to disambiguate.");
+
+            var (_, target) = hits[0];
+            string text;
+            if (target is MethodDef methodDef)
+            {
+                if (!methodDef.HasBody)
+                    throw new ArgumentException($"Method {DescribeSignature(methodDef)} has no IL body (abstract / extern / P/Invoke).");
+                text = DecompileMethodToText(methodDef, includeStateMachine);
+            }
+            else
+            {
+                var typeDef = (TypeDef)target;
+                var decompiler = decompilerService.Decompiler;
+                var output = new StringBuilderDecompilerOutput();
+                decompiler.Decompile(typeDef, output, new DecompilationContext { CancellationToken = System.Threading.CancellationToken.None });
+                text = output.ToString();
+            }
+
+            return new CallToolResult
+            {
+                Content = new List<ToolContent> {
+                    new ToolContent { Text = text }
+                }
+            };
+        }
+
+        /// <summary>
+        /// Decompiles a method to C#, with the async/iterator rescue: the compiler stamps the kickoff
+        /// with [AsyncStateMachine(typeof(&lt;M&gt;d__N))] / [IteratorStateMachine(...)] pointing at the
+        /// nested state machine. ILSpy normally inlines it back into await/yield, but on some compiler
+        /// output (notably Unity's) the pattern match misses and we get only the kickoff stub. When that
+        /// happens, append the raw MoveNext decompilation so the real logic is never lost. Skipped when
+        /// the kickoff already reconstructed cleanly, or when <paramref name="includeStateMachine"/> is false.
+        /// </summary>
+        string DecompileMethodToText(MethodDef method, bool includeStateMachine)
+        {
             var decompiler = decompilerService.Decompiler;
             var output = new StringBuilderDecompilerOutput();
             var decompilationContext = new DecompilationContext
@@ -928,12 +1124,6 @@ namespace dnSpy.Extension.MCP
             decompiler.Decompile(method, output, decompilationContext);
             var text = output.ToString();
 
-            // async / iterator rescue: the compiler stamps the kickoff with
-            // [AsyncStateMachine(typeof(<M>d__N))] / [IteratorStateMachine(...)] pointing at the
-            // nested state machine. ILSpy normally inlines it back into await/yield, but on some
-            // compiler output (notably Unity's) the pattern match misses and we get only the
-            // kickoff stub. When that happens, append the raw MoveNext decompilation so the real
-            // logic is never lost. Skip it when the kickoff already reconstructed cleanly.
             if (includeStateMachine)
             {
                 var smType = GetStateMachineType(method);
@@ -951,12 +1141,7 @@ namespace dnSpy.Extension.MCP
                 }
             }
 
-            return new CallToolResult
-            {
-                Content = new List<ToolContent> {
-                    new ToolContent { Text = text }
-                }
-            };
+            return text;
         }
 
         CallToolResult SearchTypes(Dictionary<string, object>? arguments)
@@ -971,7 +1156,25 @@ namespace dnSpy.Extension.MCP
             if (arguments.TryGetValue("cursor", out var cursorObj))
                 cursor = cursorObj.ToString();
 
-            var (offset, pageSize) = DecodeCursor(cursor);
+            var namesOnly = ReadOptionalBool(arguments, "names_only") ?? false;
+            var (offset, pageSize) = ResolvePageSize(cursor, arguments);
+
+            // Optional assembly scope: searching *Save* / *Storage* across all assemblies drowns
+            // game types under mscorlib/System framework hits. Restrict to one assembly when given.
+            var assemblyName = ReadOptionalString(arguments, "assembly_name");
+            IEnumerable<TypeDef> typeUniverse;
+            if (assemblyName != null)
+            {
+                var assembly = FindAssemblyByName(assemblyName);
+                if (assembly == null)
+                    throw new ArgumentException($"Assembly not found: {assemblyName}");
+                typeUniverse = assembly.Modules.SelectMany(m => m.GetTypes());
+            }
+            else
+            {
+                typeUniverse = documentTreeView.GetAllModuleNodes()
+                    .SelectMany(m => m.Document?.ModuleDef?.GetTypes() ?? Enumerable.Empty<TypeDef>());
+            }
 
             // Check if query contains wildcards
             bool hasWildcard = query.Contains("*");
@@ -986,9 +1189,13 @@ namespace dnSpy.Extension.MCP
 
             // GetTypes() (recursive) so nested compiler-generated state machines match too —
             // e.g. searching '*d__*' or '*<Awake>*' surfaces async / iterator state machines.
-            var results = documentTreeView.GetAllModuleNodes()
-                .SelectMany(m => m.Document?.ModuleDef?.GetTypes() ?? Enumerable.Empty<TypeDef>())
-                .Where(t => hasWildcard ? regex!.IsMatch(t.FullName) : t.FullName.ToLowerInvariant().Contains(queryLower))
+            var matched = typeUniverse
+                .Where(t => hasWildcard ? regex!.IsMatch(t.FullName) : t.FullName.ToLowerInvariant().Contains(queryLower));
+
+            if (namesOnly)
+                return CreatePaginatedResponse(matched.Select(t => t.FullName).ToList(), offset, pageSize);
+
+            var results = matched
                 .Select(t => new
                 {
                     AssemblyName = t.Module?.Assembly?.Name.String ?? "Unknown",
@@ -1526,6 +1733,86 @@ namespace dnSpy.Extension.MCP
             if (raw is IConvertible conv)
                 return Convert.ToUInt32(conv, System.Globalization.CultureInfo.InvariantCulture);
             throw new ArgumentException($"{key} must be an unsigned 32-bit integer");
+        }
+
+        static string? ReadOptionalString(Dictionary<string, object> args, string key)
+        {
+            if (!args.TryGetValue(key, out var raw) || raw == null)
+                return null;
+            string? s;
+            if (raw is JsonElement el)
+            {
+                if (el.ValueKind == JsonValueKind.Null)
+                    return null;
+                s = el.ValueKind == JsonValueKind.String ? el.GetString() : el.ToString();
+            }
+            else
+            {
+                s = raw.ToString();
+            }
+            return string.IsNullOrWhiteSpace(s) ? null : s;
+        }
+
+        static int? ReadOptionalInt(Dictionary<string, object> args, string key)
+        {
+            if (!args.TryGetValue(key, out var raw) || raw == null)
+                return null;
+            if (raw is JsonElement el)
+            {
+                if (el.ValueKind == JsonValueKind.Null)
+                    return null;
+                if (el.ValueKind == JsonValueKind.Number && el.TryGetInt32(out var n))
+                    return n;
+                if (el.ValueKind == JsonValueKind.String && int.TryParse(el.GetString(), out var sn))
+                    return sn;
+                throw new ArgumentException($"{key} must be an integer");
+            }
+            if (raw is int i)
+                return i;
+            if (int.TryParse(raw.ToString(), out var pi))
+                return pi;
+            throw new ArgumentException($"{key} must be an integer");
+        }
+
+        /// <summary>
+        /// (offset, pageSize) from the cursor, with a first-request <c>page_size</c> override (capped
+        /// at 1000). On paginated follow-ups the cursor's own page size is authoritative.
+        /// </summary>
+        (int offset, int pageSize) ResolvePageSize(string? cursor, Dictionary<string, object>? arguments)
+        {
+            var (offset, pageSize) = DecodeCursor(cursor);
+            if (string.IsNullOrEmpty(cursor) && arguments != null)
+            {
+                var ps = ReadOptionalInt(arguments, "page_size");
+                if (ps.HasValue)
+                {
+                    if (ps.Value <= 0)
+                        throw new ArgumentException("page_size must be positive");
+                    pageSize = Math.Min(ps.Value, 1000);
+                }
+            }
+            return (offset, pageSize);
+        }
+
+        /// <summary>
+        /// True if any type in <paramref name="type"/>'s base chain has a FullName containing
+        /// <paramref name="baseNeedle"/> (case-insensitive) — e.g. base_type "MonoBehaviour" matches
+        /// all (transitive) UnityEngine.MonoBehaviour subclasses. Walks up via ResolveTypeDef, capped.
+        /// </summary>
+        static bool InheritsFrom(TypeDef type, string baseNeedle)
+        {
+            var cur = type.BaseType;
+            int guard = 0;
+            while (cur != null && guard++ < 50)
+            {
+                if (cur.FullName.IndexOf(baseNeedle, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+                var def = cur.ResolveTypeDef();
+                if (def == null)
+                    break;
+                cur = def.BaseType;
+            }
+            return false;
         }
 
         /// <summary>
