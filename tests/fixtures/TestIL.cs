@@ -90,6 +90,12 @@ namespace TestIL
     public class Enemy : BaseEntity { public override int Attack() => 50; }
     public class Boss : Enemy { public override int Attack() => 500; }
 
+    // Interface + implementors for find_overrides overridden_by on an interface method:
+    // Crate implements TakeDamage implicitly, Wall implements it explicitly.
+    public interface IDamageable { int TakeDamage(int amount); }
+    public class Crate : IDamageable { public int TakeDamage(int amount) => amount; }
+    public class Wall : IDamageable { int IDamageable.TakeDamage(int amount) => amount * 2; }
+
     // Compiler-generated state-machine coverage for nested-type addressing + decompile rescue.
     // DoCoroutine -> nested iterator state machine <DoCoroutine>d__N : IEnumerator (MoveNext).
     // DoAsync     -> nested async state machine     <DoAsync>d__N : IAsyncStateMachine (MoveNext).

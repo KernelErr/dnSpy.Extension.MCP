@@ -207,6 +207,10 @@ namespace dnSpy.Extension.MCP
                 var targetType = target.DeclaringType;
                 if (targetType == null)
                     throw new ArgumentException("target method has no declaring type");
+                // Two relationships count as "overridden by": a subclass overriding a class virtual,
+                // or a type implementing an interface method. dnSpy's Analyze lists both; which one
+                // applies is decided by whether the target's declaring type is an interface.
+                bool targetIsInterface = targetType.IsInterface;
                 foreach (var module in AllLoadedModules())
                 {
                     var asm = module.Assembly?.Name.String ?? "Unknown";
@@ -214,16 +218,22 @@ namespace dnSpy.Extension.MCP
                     {
                         if (SameTypeDef(type, targetType))
                             continue;
-                        // Cheap pre-filter: a type can only override the target if it declares a
-                        // virtual method named like it (or one carrying an explicit override). Skip
-                        // the base-chain walk for everything else — the bulk of a Unity assembly.
+                        // Cheap pre-filter: a type can only override/implement the target if it
+                        // declares a virtual method named like it (or carrying an explicit override).
+                        // Skips the base-chain / interface walk for the bulk of a Unity assembly.
                         if (!HasOverrideCandidate(type, target))
                             continue;
-                        if (!InheritsFromType(type, targetType))
+                        bool related = targetIsInterface
+                            ? ImplementsInterface(type, targetType)
+                            : InheritsFromType(type, targetType);
+                        if (!related)
                             continue;
                         foreach (var m in type.Methods)
                         {
-                            if (!m.IsVirtual || !OverridesTarget(m, target) || !seen.Add(m.FullName))
+                            bool match = targetIsInterface
+                                ? ImplementsInterfaceMethod(m, target)
+                                : (m.IsVirtual && OverridesTarget(m, target));
+                            if (!match || !seen.Add(m.FullName))
                                 continue;
                             results.Add(new
                             {
@@ -233,6 +243,7 @@ namespace dnSpy.Extension.MCP
                                 token = m.MDToken.Raw,
                                 assembly = asm,
                                 is_abstract = m.IsAbstract,
+                                is_interface_impl = targetIsInterface,
                             });
                         }
                     }
@@ -394,6 +405,57 @@ namespace dnSpy.Extension.MCP
                     return true;
             }
             return false;
+        }
+
+        // True if type implements iface, following the class base chain and interface inheritance
+        // (an interface a type implements may itself extend the target interface). Class implements
+        // are tracked via InterfaceImpl, not BaseType, which is why interface targets need this
+        // rather than InheritsFromType.
+        static bool ImplementsInterface(TypeDef type, TypeDef iface)
+        {
+            var visited = new HashSet<TypeDef>();
+            TypeDef? cur = type;
+            int guard = 0;
+            while (cur != null && guard++ < 100)
+            {
+                foreach (var impl in cur.Interfaces)
+                {
+                    var idef = TryResolve(() => impl.Interface.ResolveTypeDef());
+                    if (idef != null && InterfaceMatchesOrExtends(idef, iface, visited))
+                        return true;
+                }
+                cur = TryResolve(() => cur!.BaseType?.ResolveTypeDef());
+            }
+            return false;
+        }
+
+        static bool InterfaceMatchesOrExtends(TypeDef candidate, TypeDef iface, HashSet<TypeDef> visited)
+        {
+            if (!visited.Add(candidate))
+                return false;
+            if (SameTypeDef(candidate, iface))
+                return true;
+            foreach (var impl in candidate.Interfaces)
+            {
+                var idef = TryResolve(() => impl.Interface.ResolveTypeDef());
+                if (idef != null && InterfaceMatchesOrExtends(idef, iface, visited))
+                    return true;
+            }
+            return false;
+        }
+
+        // True if m is this type's implementation of interface method ifaceMethod — either an explicit
+        // implementation (MethodOverride points at it) or an implicit one (a non-static method with the
+        // same name + signature). The caller has already confirmed the type implements the interface.
+        static bool ImplementsInterfaceMethod(MethodDef m, MethodDef ifaceMethod)
+        {
+            foreach (var mo in m.Overrides)
+            {
+                var d = TryResolve(() => mo.MethodDeclaration?.ResolveMethodDef());
+                if (d != null && d == ifaceMethod)
+                    return true;
+            }
+            return !m.IsStatic && m.Name == ifaceMethod.Name && SameOverrideSignature(m, ifaceMethod);
         }
 
         // A subclass method overrides target if it reuses the base vtable slot with a matching

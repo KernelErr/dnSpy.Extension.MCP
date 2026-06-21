@@ -508,6 +508,17 @@ try
     try { Rpc 'find_overrides' @{ direction='sideways'; assembly_name='TestIL'; type_full_name='TestIL.BaseEntity'; method_name='Attack' } | Out-Null }
     catch { $badDir = $_.Exception.Message }
     Assert ($badDir -and ($badDir -match 'unknown direction')) "invalid direction errors with guidance" "got: $badDir"
+
+    Write-Host ""
+    Write-Host "[21d] find_overrides overridden_by on an interface method (implementors)"
+    $impl = Rpc 'find_overrides' @{ assembly_name='TestIL'; type_full_name='TestIL.IDamageable'; method_name='TakeDamage' }
+    $implTypes = @($impl.items | Where-Object { $_.assembly -eq 'TestIL' } | ForEach-Object { $_.type } | Sort-Object -Unique)
+    Assert (($implTypes -contains 'TestIL.Crate') -and ($implTypes -contains 'TestIL.Wall')) "interface impl lists Crate (implicit) + Wall (explicit)" "got $($implTypes -join ',')"
+    $crateHit = $impl.items | Where-Object { $_.type -eq 'TestIL.Crate' } | Select-Object -First 1
+    Assert ($crateHit.is_interface_impl -eq $true -and $crateHit.token -gt 0) "interface-impl hit flagged is_interface_impl + carries token"
+    # The implementor's token is addressable like any other.
+    $crateSrc = RpcText 'decompile_by_token' @{ token=$crateHit.token; assembly_name='TestIL' }
+    Assert ($crateSrc -match 'TakeDamage') "interface-impl token feeds decompile_by_token"
 }
 finally
 {

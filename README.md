@@ -28,7 +28,7 @@ Chinese / 中文说明: see [README.zh-CN.md](README.zh-CN.md).
 1. **find_callers** — every method that *calls* a given method (call / callvirt / newobj / ldftn), across all assemblies. Each hit carries caller type/method, `MDToken`, opcode, IL index/offset
 2. **find_callees** — the inverse: what a single method *uses* (methods it calls, fields it reads/writes, types it touches), deduplicated per referenced member with opcodes + site count and a resolved `MDToken` (dnSpy Analyze's "Uses")
 3. **find_references** — every IL site referencing a `method` / `field` / `type` / `string` (`target_kind` selects), across all assemblies
-4. **find_overrides** — virtual-method polymorphism (dnSpy Analyze's "Overridden By" / "Overrides"): `direction='overridden_by'` lists every subclass that overrides a virtual method (the concrete bodies a `callvirt` can dispatch to — which `find_callers` can't surface); `direction='overrides'` walks the base chain for what a method overrides
+4. **find_overrides** — virtual / interface-method polymorphism (dnSpy Analyze's "Overridden By" / "Overrides"): `direction='overridden_by'` lists every type that overrides a class virtual **or implements an interface method** (implicit + explicit; `is_interface_impl` flags the latter) — the concrete bodies a `callvirt` can dispatch to, which `find_callers` can't surface; `direction='overrides'` walks the base chain for what a method overrides
 
 #### String literals
 
