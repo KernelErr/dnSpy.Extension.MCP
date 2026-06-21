@@ -214,6 +214,11 @@ namespace dnSpy.Extension.MCP
                     {
                         if (SameTypeDef(type, targetType))
                             continue;
+                        // Cheap pre-filter: a type can only override the target if it declares a
+                        // virtual method named like it (or one carrying an explicit override). Skip
+                        // the base-chain walk for everything else — the bulk of a Unity assembly.
+                        if (!HasOverrideCandidate(type, target))
+                            continue;
                         if (!InheritsFromType(type, targetType))
                             continue;
                         foreach (var m in type.Methods)
@@ -377,6 +382,19 @@ namespace dnSpy.Extension.MCP
         static bool SameOverrideSignature(MethodDef a, MethodDef b)
             => a.Name == b.Name && a.MethodSig != null && b.MethodSig != null
                && new SigComparer().Equals(a.MethodSig, b.MethodSig);
+
+        // Cheap gate for the overridden_by sweep: does this type even declare a virtual method that
+        // could override target? Matches the two ways OverridesTarget can succeed (same name, or an
+        // explicit MethodOverride) without resolving the base chain, so it never excludes a real hit.
+        static bool HasOverrideCandidate(TypeDef type, MethodDef target)
+        {
+            foreach (var m in type.Methods)
+            {
+                if (m.IsVirtual && (m.HasOverrides || m.Name == target.Name))
+                    return true;
+            }
+            return false;
+        }
 
         // A subclass method overrides target if it reuses the base vtable slot with a matching
         // name + signature, or explicitly lists target in its MethodOverrides.

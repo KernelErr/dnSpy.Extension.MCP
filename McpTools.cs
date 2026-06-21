@@ -303,7 +303,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "find_callees",
-                    Description = "Cross-reference (inverse of find_callers): list what a single method USES — the methods it calls, the fields it reads/writes, and the types it touches in its own body (dnSpy Analyze's 'Uses' node). Identify the method by assembly_name + type_full_name + method_name (with parameter_types or method_token for overloads). Results are deduplicated per referenced member: each row has ref_kind (method/field/type), the full signature, the resolved MDToken (uint, feed to decompile_by_token), target_assembly, the set of opcodes, an occurrences count, and first_il_index. Paginated (default page size 10).",
+                    Description = "Cross-reference (inverse of find_callers): list what a single method USES — the methods it calls, the fields it reads/writes, and the types it touches in its own body (dnSpy Analyze's 'Uses' node). Identify the method by assembly_name + type_full_name + method_name (with parameter_types or method_token for overloads). Results are deduplicated per referenced member: each row has ref_kind (method/field/type), the full signature, the resolved MDToken (uint) paired with target_assembly (pass both to decompile_by_token — the callee may live in a different assembly than the caller), the set of opcodes, an occurrences count, and first_il_index. token/target_assembly are null for references into assemblies that aren't loaded. Paginated (default page size 10).",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
