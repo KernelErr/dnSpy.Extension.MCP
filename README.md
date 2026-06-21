@@ -12,14 +12,14 @@ Chinese / 中文说明: see [README.zh-CN.md](README.zh-CN.md).
 
 1. **list_assemblies** — list all loaded assemblies with metadata
 2. **get_assembly_info** — detailed info about a specific assembly (paginated namespaces)
-3. **list_types** — all types in an assembly or namespace (paginated)
+3. **list_types** — all types in an assembly or namespace (paginated); includes nested + compiler-generated state machines by default (`is_nested` / `is_compiler_generated` flags; `include_nested=false` for top-level only)
 4. **get_type_info** — fields, properties, and paginated methods for a type (methods include `token` / `MDToken` for unambiguous identification)
 5. **list_methods** — methods of a type with `token` + `parameter_types` per entry, paginated
 6. **get_type_fields** — filter fields by wildcard pattern (e.g. `*Bonus*`)
 7. **get_type_property** — detailed info about a property including getter/setter
-8. **search_types** — wildcard / substring type search across all assemblies
+8. **search_types** — wildcard / substring type search across all assemblies; matches nested compiler-generated types too (e.g. `*<Awake>d__*`)
 9. **find_path_to_type** — BFS over fields/properties to connect two types
-10. **decompile_method** — decompile a method to C# (accepts `parameter_types` / `method_token` to disambiguate overloads)
+10. **decompile_method** — decompile a method to C# (accepts `parameter_types` / `method_token` to disambiguate overloads). Nested types are addressable (`Outer/Inner`, `.`/`+`/`/` all accepted), so you can decompile a state machine's `MoveNext` directly. For async/iterator kickoffs, when the decompiler can't inline the state machine back into `await`/`yield` (common on Unity output) the raw `MoveNext` body is appended automatically (`include_state_machine=false` to opt out)
 
 #### Cross-references (xref)
 

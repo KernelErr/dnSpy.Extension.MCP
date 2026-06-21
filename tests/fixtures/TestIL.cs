@@ -61,4 +61,25 @@ namespace TestIL
         public static string CallsSave() => StringKeys.SaveGame();
         public static System.Type RefType() => typeof(Simple);
     }
+
+    // Compiler-generated state-machine coverage for nested-type addressing + decompile rescue.
+    // DoCoroutine -> nested iterator state machine <DoCoroutine>d__N : IEnumerator (MoveNext).
+    // DoAsync     -> nested async state machine     <DoAsync>d__N : IAsyncStateMachine (MoveNext).
+    public class Machines
+    {
+        public static int counter;
+
+        public System.Collections.IEnumerator DoCoroutine()
+        {
+            counter++;
+            yield return null;
+            counter += 10;
+        }
+
+        public async void DoAsync()
+        {
+            await System.Threading.Tasks.Task.Yield();
+            counter += 100;
+        }
+    }
 }

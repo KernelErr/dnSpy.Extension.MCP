@@ -81,6 +81,10 @@ namespace dnSpy.Extension.MCP
                                 ["type"] = "string",
                                 ["description"] = "Optional namespace filter"
                             },
+                            ["include_nested"] = new Dictionary<string, object> {
+                                ["type"] = "boolean",
+                                ["description"] = "Default true. Include nested types — including compiler-generated async/iterator state machines (e.g. GameOver/<Awake>d__63). Set false for top-level types only. Each entry carries is_nested / is_compiler_generated / declaring_type."
+                            },
                             ["cursor"] = new Dictionary<string, object> {
                                 ["type"] = "string",
                                 ["description"] = "Optional cursor for pagination (opaque token from previous response). Default page size: 10 types."
@@ -137,6 +141,10 @@ namespace dnSpy.Extension.MCP
                             ["method_token"] = new Dictionary<string, object> {
                                 ["type"] = "integer",
                                 ["description"] = "Optional. MDToken.Raw as uint (from get_type_info or list_methods). Unambiguous — takes precedence over parameter_types."
+                            },
+                            ["include_state_machine"] = new Dictionary<string, object> {
+                                ["type"] = "boolean",
+                                ["description"] = "Default true. For async / iterator methods, if the decompiler can't inline the state machine back into await/yield (common on Unity/Mono output), append the raw compiler-generated MoveNext body so the real logic isn't lost. Set false to get only the kickoff."
                             }
                         },
                         ["required"] = new List<string> { "assembly_name", "type_full_name", "method_name" }
@@ -732,10 +740,17 @@ namespace dnSpy.Extension.MCP
             if (arguments.TryGetValue("cursor", out var cursorObj))
                 cursor = cursorObj.ToString();
 
+            // Default to including nested types so compiler-generated state machines (async /
+            // iterator) are listed — they're where Unity coroutine / async logic actually lives.
+            var includeNested = ReadOptionalBool(arguments, "include_nested") ?? true;
+
             var (offset, pageSize) = DecodeCursor(cursor);
 
-            var types = assembly.Modules
-                .SelectMany(m => m.Types)
+            var allTypes = includeNested
+                ? assembly.Modules.SelectMany(m => m.GetTypes())
+                : assembly.Modules.SelectMany(m => m.Types);
+
+            var types = allTypes
                 .Where(t => string.IsNullOrEmpty(namespaceFilter) || t.Namespace == namespaceFilter)
                 .Select(t => new
                 {
@@ -743,6 +758,9 @@ namespace dnSpy.Extension.MCP
                     Namespace = t.Namespace.String,
                     Name = t.Name.String,
                     IsPublic = t.IsPublic,
+                    IsNested = t.IsNested,
+                    IsCompilerGenerated = IsCompilerGeneratedType(t),
+                    DeclaringType = t.DeclaringType?.FullName,
                     IsClass = t.IsClass,
                     IsInterface = t.IsInterface,
                     IsEnum = t.IsEnum,
@@ -897,6 +915,7 @@ namespace dnSpy.Extension.MCP
                 throw new ArgumentException($"Type not found: {typeFullName}");
 
             var method = FindMethod(type, methodName, parameterTypes, methodToken);
+            var includeStateMachine = ReadOptionalBool(arguments, "include_state_machine") ?? true;
 
             // Decompile the method
             var decompiler = decompilerService.Decompiler;
@@ -907,11 +926,35 @@ namespace dnSpy.Extension.MCP
             };
 
             decompiler.Decompile(method, output, decompilationContext);
+            var text = output.ToString();
+
+            // async / iterator rescue: the compiler stamps the kickoff with
+            // [AsyncStateMachine(typeof(<M>d__N))] / [IteratorStateMachine(...)] pointing at the
+            // nested state machine. ILSpy normally inlines it back into await/yield, but on some
+            // compiler output (notably Unity's) the pattern match misses and we get only the
+            // kickoff stub. When that happens, append the raw MoveNext decompilation so the real
+            // logic is never lost. Skip it when the kickoff already reconstructed cleanly.
+            if (includeStateMachine)
+            {
+                var smType = GetStateMachineType(method);
+                var moveNext = smType?.Methods.FirstOrDefault(m => m.Name == "MoveNext" && m.HasBody);
+                bool alreadyReconstructed = text.Contains("await ") || text.Contains("yield return") || text.Contains("yield break");
+                if (moveNext != null && !alreadyReconstructed)
+                {
+                    var smOutput = new StringBuilderDecompilerOutput();
+                    decompiler.Decompile(moveNext, smOutput, decompilationContext);
+                    text += "\n\n// ===================================================================\n" +
+                            $"// Kickoff reconstruction unavailable for this compiler's output.\n" +
+                            $"// Raw compiler-generated state machine body: {smType!.FullName}::MoveNext\n" +
+                            "// ===================================================================\n" +
+                            smOutput.ToString();
+                }
+            }
 
             return new CallToolResult
             {
                 Content = new List<ToolContent> {
-                    new ToolContent { Text = output.ToString() }
+                    new ToolContent { Text = text }
                 }
             };
         }
@@ -941,8 +984,10 @@ namespace dnSpy.Extension.MCP
                 regex = new System.Text.RegularExpressions.Regex(regexPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             }
 
+            // GetTypes() (recursive) so nested compiler-generated state machines match too —
+            // e.g. searching '*d__*' or '*<Awake>*' surfaces async / iterator state machines.
             var results = documentTreeView.GetAllModuleNodes()
-                .SelectMany(m => m.Document?.ModuleDef?.Types ?? Enumerable.Empty<TypeDef>())
+                .SelectMany(m => m.Document?.ModuleDef?.GetTypes() ?? Enumerable.Empty<TypeDef>())
                 .Where(t => hasWildcard ? regex!.IsMatch(t.FullName) : t.FullName.ToLowerInvariant().Contains(queryLower))
                 .Select(t => new
                 {
@@ -950,7 +995,10 @@ namespace dnSpy.Extension.MCP
                     FullName = t.FullName,
                     Namespace = t.Namespace.String,
                     Name = t.Name.String,
-                    IsPublic = t.IsPublic
+                    IsPublic = t.IsPublic,
+                    IsNested = t.IsNested,
+                    IsCompilerGenerated = IsCompilerGeneratedType(t),
+                    DeclaringType = t.DeclaringType?.FullName
                 })
                 .ToList();
 
@@ -1322,9 +1370,54 @@ namespace dnSpy.Extension.MCP
 
         TypeDef? FindTypeInAssembly(AssemblyDef assembly, string fullName)
         {
-            return assembly.Modules
-                .SelectMany(m => m.Types)
-                .FirstOrDefault(t => t.FullName.Equals(fullName, StringComparison.Ordinal));
+            // GetTypes() (not Types) walks nested types too, so compiler-generated state machines
+            // like GameOver/<Awake>d__63 are addressable — the whole point of the Unity-coroutine /
+            // async fix. dnlib renders nested FullNames with '/'; callers often type '.' or '+'
+            // instead, so we exact-match first, then fall back to a separator-normalized compare.
+            var all = assembly.Modules.SelectMany(m => m.GetTypes()).ToList();
+            var exact = all.FirstOrDefault(t => t.FullName.Equals(fullName, StringComparison.Ordinal));
+            if (exact != null)
+                return exact;
+
+            var needle = NormalizeTypeSeparators(fullName);
+            return all.FirstOrDefault(t => NormalizeTypeSeparators(t.FullName).Equals(needle, StringComparison.Ordinal));
+        }
+
+        // Collapse the three nested-type separators a caller might use ('/', '+', '.') so
+        // "GameOver/<Awake>d__63", "GameOver+<Awake>d__63" and "GameOver.<Awake>d__63" all resolve.
+        static string NormalizeTypeSeparators(string fullName)
+            => fullName.Replace('+', '/').Replace('.', '/');
+
+        /// <summary>
+        /// If <paramref name="method"/> is an async or iterator kickoff, returns the compiler-generated
+        /// state machine type it points at via [AsyncStateMachine] / [IteratorStateMachine]; otherwise null.
+        /// </summary>
+        static TypeDef? GetStateMachineType(MethodDef method)
+        {
+            foreach (var ca in method.CustomAttributes)
+            {
+                var fn = ca.AttributeType?.FullName;
+                if (fn != "System.Runtime.CompilerServices.AsyncStateMachineAttribute" &&
+                    fn != "System.Runtime.CompilerServices.IteratorStateMachineAttribute")
+                    continue;
+                if (ca.ConstructorArguments.Count == 0)
+                    continue;
+                var val = ca.ConstructorArguments[0].Value;
+                if (val is TypeSig ts)
+                    return ts.ToTypeDefOrRef()?.ResolveTypeDef();
+                if (val is ITypeDefOrRef tdr)
+                    return tdr.ResolveTypeDef();
+            }
+            return null;
+        }
+
+        static bool IsCompilerGeneratedType(TypeDef t)
+        {
+            // State machines / closures are named like <Method>d__N / <>c / <>c__DisplayClass.
+            if (t.Name.String.IndexOf('<') >= 0)
+                return true;
+            return t.CustomAttributes.Any(ca =>
+                ca.AttributeType?.FullName == "System.Runtime.CompilerServices.CompilerGeneratedAttribute");
         }
 
         /// <summary>

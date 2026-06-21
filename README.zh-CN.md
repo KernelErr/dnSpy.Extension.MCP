@@ -12,14 +12,14 @@ English: see [README.md](README.md).
 
 1. **list_assemblies** — 列出所有已加载的程序集及其元数据
 2. **get_assembly_info** — 查看指定程序集的详细信息（命名空间分页）
-3. **list_types** — 列出程序集或命名空间下的所有类型（分页）
+3. **list_types** — 列出程序集或命名空间下的所有类型（分页）；默认包含嵌套类型及编译器生成的状态机（带 `is_nested` / `is_compiler_generated` 标志；`include_nested=false` 仅顶层）
 4. **get_type_info** — 获取类型的字段、属性及分页的方法（方法条目含 `token` / `MDToken`，用于无歧义定位）
 5. **list_methods** — 列出类型的全部方法，每条含 `token` 与 `parameter_types`，分页
 6. **get_type_fields** — 按通配符匹配类型的字段（如 `*Bonus*`）
 7. **get_type_property** — 获取属性的详细信息，包含 get/set 访问器
-8. **search_types** — 跨程序集按通配符或子串搜索类型
+8. **search_types** — 跨程序集按通配符或子串搜索类型；也能匹配嵌套的编译器生成类型（如 `*<Awake>d__*`）
 9. **find_path_to_type** — 基于字段/属性对两个类型做 BFS 路径搜索
-10. **decompile_method** — 将方法反编译为 C#（可通过 `parameter_types` / `method_token` 精确区分重载）
+10. **decompile_method** — 将方法反编译为 C#（可通过 `parameter_types` / `method_token` 精确区分重载）。嵌套类型可寻址（`Outer/Inner`，`.`/`+`/`/` 都接受），因此可直接反编译状态机的 `MoveNext`。对 async/iterator 的 kickoff，当反编译器无法把状态机内联回 `await`/`yield` 时（Unity 产物常见），会自动把原始 `MoveNext` 体附在后面（`include_state_machine=false` 可关闭）
 
 #### 交叉引用（xref）
 

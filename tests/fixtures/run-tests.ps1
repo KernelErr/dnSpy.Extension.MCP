@@ -269,8 +269,9 @@ try
     $methodsWithSave = @($saveHits | ForEach-Object { $_.method } | Sort-Object -Unique)
     Assert (($methodsWithSave -contains 'SaveGame') -and ($methodsWithSave -contains 'LoadGame')) "both SaveGame and LoadGame returned" "got $($methodsWithSave -join ',')"
     Assert ($saveHits[0].method_token -gt 0 -and $saveHits[0].type -eq 'TestIL.StringKeys') "hit carries type + MDToken"
-    # Unique key resolves to exactly one method.
-    $umbra = Rpc 'search_string_literals' @{ query='TheFinaleUmbra' }
+    # Unique key resolves to exactly one method. Scope to TestIL: a real game assembly may also be
+    # open in the dev's dnSpy session (session restore), and game strings could collide.
+    $umbra = Rpc 'search_string_literals' @{ query='TheFinaleUmbra'; assembly_name='TestIL' }
     $umbraHits = @($umbra.items | Where-Object { $_.value -eq 'TheFinaleUmbra' })
     Assert ($umbraHits.Count -eq 1 -and $umbraHits[0].method -eq 'LoadGame') "TheFinaleUmbra resolves to LoadGame only" "count=$($umbraHits.Count)"
     # Wildcard match anchored to the whole literal.
@@ -320,8 +321,51 @@ try
     Write-Host ""
     Write-Host "[16c] find_references string (parity with search_string_literals)"
     $strRefs = Rpc 'find_references' @{ target_kind='string'; query='TheFinaleUmbra' }
-    $strHits = @($strRefs.items | Where-Object { $_.reference -eq 'TheFinaleUmbra' })
+    $strHits = @($strRefs.items | Where-Object { $_.reference -eq 'TheFinaleUmbra' -and $_.caller_assembly -eq 'TestIL' })
     Assert ($strHits.Count -eq 1 -and $strHits[0].caller_method -eq 'LoadGame') "string xref resolves to LoadGame" "count=$($strHits.Count)"
+
+    # ----- step 17: nested / compiler-generated state machines -----
+    Write-Host ""
+    Write-Host "[17] iterator state machine: discoverable + addressable"
+    $coroSearch = Rpc 'search_types' @{ query='*DoCoroutine*' }
+    $coroSM = $coroSearch.items | Where-Object { $_.FullName -match 'DoCoroutine' -and $_.IsCompilerGenerated -eq $true } | Select-Object -First 1
+    Assert ($coroSM -ne $null) "iterator state machine surfaced by search_types"
+    Assert ($coroSM.IsNested -eq $true) "state machine flagged is_nested"
+    # Address the nested type's MoveNext directly -> the real body (was unreachable before).
+    $coroMoveNext = RpcText 'decompile_method' @{ assembly_name='TestIL'; type_full_name=$coroSM.FullName; method_name='MoveNext' }
+    Assert ($coroMoveNext -match 'counter') "MoveNext of <DoCoroutine>d__ decompiles to real body (references counter)" "src:`n$coroMoveNext"
+    # Separator tolerance: same type addressed with '.' instead of '/'.
+    $coroDotName = $coroSM.FullName -replace '/', '.'
+    $coroViaDot = RpcText 'decompile_method' @{ assembly_name='TestIL'; type_full_name=$coroDotName; method_name='MoveNext' }
+    Assert ($coroViaDot -match 'counter') "nested type addressable with '.' separator too ($coroDotName)"
+
+    Write-Host ""
+    Write-Host "[17b] async void state machine: discoverable + addressable"
+    $asyncSearch = Rpc 'search_types' @{ query='*DoAsync*' }
+    $asyncSM = $asyncSearch.items | Where-Object { $_.FullName -match 'DoAsync' -and $_.IsCompilerGenerated -eq $true } | Select-Object -First 1
+    Assert ($asyncSM -ne $null) "async void state machine surfaced by search_types"
+    $asyncMoveNext = RpcText 'decompile_method' @{ assembly_name='TestIL'; type_full_name=$asyncSM.FullName; method_name='MoveNext' }
+    Assert ($asyncMoveNext -match '100') "MoveNext of <DoAsync>d__ decompiles to real body (counter += 100)" "src:`n$asyncMoveNext"
+
+    Write-Host ""
+    Write-Host "[17c] list_types includes nested types by default, excludes with include_nested=false"
+    $withNested = Rpc 'list_types' @{ assembly_name='TestIL' }
+    $topOnly = Rpc 'list_types' @{ assembly_name='TestIL'; include_nested=$false }
+    Assert ($withNested.total_count -gt $topOnly.total_count) "include_nested surfaces extra (nested) types" "withNested=$($withNested.total_count) topOnly=$($topOnly.total_count)"
+
+    Write-Host ""
+    Write-Host "[17d] decompile_method on kickoffs always exposes the real body"
+    # The whole point: decompiling the kickoff yields the real logic — either ILSpy reconstructs
+    # await/yield inline, or (when its pattern match misses, e.g. on Unity output) we append the
+    # raw compiler-generated MoveNext. Either way the body (which touches 'counter') is present.
+    $coroKickoff = RpcText 'decompile_method' @{ assembly_name='TestIL'; type_full_name='TestIL.Machines'; method_name='DoCoroutine' }
+    Assert ($coroKickoff -match 'counter') "DoCoroutine decompile exposes real body (yield reconstruction or appended MoveNext)" "src:`n$coroKickoff"
+    # async void is the case the user hit: kickoff stub only. With the rescue, the body shows up.
+    $asyncKickoff = RpcText 'decompile_method' @{ assembly_name='TestIL'; type_full_name='TestIL.Machines'; method_name='DoAsync' }
+    Assert ($asyncKickoff -match '100') "DoAsync (async void) decompile exposes real body (counter += 100)" "src:`n$asyncKickoff"
+    # Opt-out returns only the kickoff (no appended state machine).
+    $asyncBare = RpcText 'decompile_method' @{ assembly_name='TestIL'; type_full_name='TestIL.Machines'; method_name='DoAsync'; include_state_machine=$false }
+    Assert ($asyncBare -notmatch 'Raw compiler-generated state machine') "include_state_machine=false suppresses the appended MoveNext"
 }
 finally
 {
