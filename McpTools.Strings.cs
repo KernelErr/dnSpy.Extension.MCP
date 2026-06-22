@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using dnlib.DotNet;
 using dnlib.DotNet.Emit;
@@ -159,6 +161,160 @@ namespace dnSpy.Extension.MCP
             }
 
             return CreatePaginatedResponse(results, offset, pageSize);
+        }
+
+        // ---------- search_constants ----------
+
+        /// <summary>
+        /// Numeric-constant search: "where is the value 1337 / 0.5 used?". Scans every ldc.i4* / ldc.i8
+        /// / ldc.r4 / ldc.r8 in method bodies (scoped to one assembly when asked, else all modules) and
+        /// reports each site like search_string_literals. An integer query matches integer constants; a
+        /// query with a decimal point matches floating-point constants (r4 matched at float precision).
+        /// The fourth dnSpy search category (alongside types / members / strings) — magic numbers, item
+        /// IDs, thresholds.
+        /// </summary>
+        CallToolResult SearchConstants(Dictionary<string, object>? arguments)
+        {
+            if (arguments == null || !arguments.TryGetValue("value", out var valueObj) || valueObj == null)
+                throw new ArgumentException("value is required (the numeric constant to find)");
+
+            var (intQuery, longTarget, dblTarget) = ParseConstantQuery(valueObj);
+
+            string? assemblyName = null;
+            if (arguments.TryGetValue("assembly_name", out var asmObj) && asmObj != null)
+            {
+                assemblyName = asmObj.ToString();
+                if (string.IsNullOrWhiteSpace(assemblyName))
+                    assemblyName = null;
+            }
+
+            string? cursor = null;
+            if (arguments.TryGetValue("cursor", out var cursorObj))
+                cursor = cursorObj?.ToString();
+
+            var (offset, pageSize) = DecodeCursor(cursor);
+
+            IEnumerable<ModuleDef> modules;
+            if (assemblyName != null)
+            {
+                var assembly = FindAssemblyByName(assemblyName);
+                if (assembly == null)
+                    throw new ArgumentException($"Assembly not found: {assemblyName}");
+                modules = assembly.Modules;
+            }
+            else
+            {
+                modules = documentTreeView.GetAllModuleNodes()
+                    .Select(m => m.Document?.ModuleDef)
+                    .Where(m => m != null)!
+                    .Cast<ModuleDef>();
+            }
+
+            var results = new List<object>();
+            foreach (var module in modules)
+            {
+                var moduleAsmName = module.Assembly?.Name.String ?? "Unknown";
+                foreach (var type in module.GetTypes())
+                {
+                    foreach (var method in type.Methods)
+                    {
+                        foreach (var (index, il_offset, opcode, isInt, longVal, dblVal) in EnumerateNumericConstants(method))
+                        {
+                            bool hit = intQuery
+                                ? (isInt && longVal == longTarget)
+                                : (!isInt && (dblVal == dblTarget || (float)dblVal == (float)dblTarget));
+                            if (!hit)
+                                continue;
+                            results.Add(new
+                            {
+                                value = isInt ? (object)longVal : dblVal,
+                                opcode,
+                                assembly = moduleAsmName,
+                                type = type.FullName,
+                                method = method.Name.String,
+                                method_token = method.MDToken.Raw,
+                                signature = method.FullName,
+                                il_index = index,
+                                il_offset
+                            });
+                        }
+                    }
+                }
+            }
+
+            return CreatePaginatedResponse(results, offset, pageSize);
+        }
+
+        // Parses the query value into either an integer target or a floating-point target.
+        static (bool intQuery, long longTarget, double dblTarget) ParseConstantQuery(object raw)
+        {
+            switch (raw)
+            {
+                case JsonElement el:
+                    if (el.ValueKind == JsonValueKind.Number)
+                        return el.TryGetInt64(out var l) ? (true, l, l) : (false, 0L, el.GetDouble());
+                    if (el.ValueKind == JsonValueKind.String)
+                        return ParseConstantString(el.GetString());
+                    throw new ArgumentException("value must be a number");
+                case string s: return ParseConstantString(s);
+                case long lv: return (true, lv, lv);
+                case int iv: return (true, iv, iv);
+                case double dv: return (false, 0L, dv);
+                default: throw new ArgumentException("value must be a number");
+            }
+        }
+
+        static (bool intQuery, long longTarget, double dblTarget) ParseConstantString(string? s)
+        {
+            s = (s ?? string.Empty).Trim();
+            if (s.Length == 0)
+                throw new ArgumentException("value must not be empty");
+            if (long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var l))
+                return (true, l, l);
+            if (double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var d))
+                return (false, 0L, d);
+            throw new ArgumentException($"could not parse value '{s}' as a number (use a decimal integer, or a number with a '.' for floats)");
+        }
+
+        /// <summary>
+        /// Extracts every numeric load constant (ldc.i4* / ldc.i8 / ldc.r4 / ldc.r8) from a method body
+        /// as (index, IL offset, opcode name, isInteger, integer value, double value). Bodyless / corrupt
+        /// methods yield nothing rather than throwing, so one bad method can't abort a whole-assembly sweep.
+        /// </summary>
+        static IEnumerable<(int index, uint offset, string opcode, bool isInt, long longVal, double dblVal)> EnumerateNumericConstants(MethodDef method)
+        {
+            if (!method.HasBody || method.Body == null)
+                return Array.Empty<(int, uint, string, bool, long, double)>();
+
+            IList<Instruction> instrs;
+            try
+            {
+                var body = method.Body;
+                body.UpdateInstructionOffsets();
+                instrs = body.Instructions;
+            }
+            catch
+            {
+                return Array.Empty<(int, uint, string, bool, long, double)>();
+            }
+
+            var found = new List<(int, uint, string, bool, long, double)>();
+            for (int i = 0; i < instrs.Count; i++)
+            {
+                var ins = instrs[i];
+                if (ins.IsLdcI4())
+                {
+                    long v = ins.GetLdcI4Value();
+                    found.Add((i, ins.Offset, ins.OpCode.Name, true, v, v));
+                }
+                else if (ins.OpCode.Code == Code.Ldc_I8 && ins.Operand is long l)
+                    found.Add((i, ins.Offset, ins.OpCode.Name, true, l, l));
+                else if (ins.OpCode.Code == Code.Ldc_R4 && ins.Operand is float f)
+                    found.Add((i, ins.Offset, ins.OpCode.Name, false, 0, f));
+                else if (ins.OpCode.Code == Code.Ldc_R8 && ins.Operand is double d)
+                    found.Add((i, ins.Offset, ins.OpCode.Name, false, 0, d));
+            }
+            return found;
         }
 
         // ---------- helpers ----------

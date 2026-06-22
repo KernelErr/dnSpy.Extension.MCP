@@ -23,7 +23,7 @@ English: see [README.md](README.md).
 
 ## 功能
 
-### MCP 工具（共 27 个）
+### MCP 工具（共 28 个）
 
 #### 加载
 
@@ -52,10 +52,11 @@ English: see [README.md](README.md).
 3. **find_references** — 跨所有程序集查找引用某 `method` / `field` / `type` / `string` 的所有 IL 位置（由 `target_kind` 选择目标种类）
 4. **find_overrides** — 虚方法/接口方法多态（对应 dnSpy Analyze 的 "Overridden By" / "Overrides"）：`direction='overridden_by'` 列出所有重写某类虚方法、**或实现某接口方法**的类型（隐式 + 显式实现，后者用 `is_interface_impl` 标记）——即 `callvirt` 真正可能分发到的具体实现，这是 `find_callers` 给不出的；`direction='overrides'` 沿基类链向上找该方法重写了谁
 
-#### 字符串字面量
+#### 字符串与常量
 
 1. **search_string_literals** — 反查：在所有程序集中查找"哪个方法发出了这个字符串（`ldstr`）"。游戏/Unity 逆向中逻辑全靠字符串 key（PlayerPrefs 键、场景名、存档令牌）串联，这是头号刚需。默认大小写不敏感子串匹配，`*` 为整串通配（如 `SAVE*`），可选只在单个程序集内搜。每条命中返回字符串值、所在类型、方法名 + `MDToken`、完整签名、IL index/offset
 2. **list_string_constants** — 列出某个类型（含嵌套类型）或单个方法内的所有 `ldstr` 字符串字面量
+3. **search_constants** — 查找数值常量被用在哪里（`ldc.i4*` / `ldc.i8` / `ldc.r4` / `ldc.r8`）——`search_string_literals` 的数字版（魔法数、物品 ID、阈值）。整数查询匹配整数常量，带小数点的查询匹配浮点常量。用 `assembly_name` 限定范围
 
 #### IL 查看与编辑
 

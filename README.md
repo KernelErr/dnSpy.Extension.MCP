@@ -23,7 +23,7 @@ From zero to "ask Claude about your assembly" in a few minutes:
 
 ## Features
 
-### MCP Tools (27 total)
+### MCP Tools (28 total)
 
 #### Loading
 
@@ -52,10 +52,11 @@ From zero to "ask Claude about your assembly" in a few minutes:
 3. **find_references** — every IL site referencing a `method` / `field` / `type` / `string` (`target_kind` selects), across all assemblies
 4. **find_overrides** — virtual / interface-method polymorphism (dnSpy Analyze's "Overridden By" / "Overrides"): `direction='overridden_by'` lists every type that overrides a class virtual **or implements an interface method** (implicit + explicit; `is_interface_impl` flags the latter) — the concrete bodies a `callvirt` can dispatch to, which `find_callers` can't surface; `direction='overrides'` walks the base chain for what a method overrides
 
-#### String literals
+#### Strings & constants
 
 1. **search_string_literals** — reverse-lookup a string across assemblies: "which method emits this `ldstr`?" (substring or `*` wildcard, optional single-assembly scope). Each hit carries declaring type, method, `MDToken`, signature, IL index/offset
 2. **list_string_constants** — list every `ldstr` in a type (incl. nested types) or a single method
+3. **search_constants** — find where a numeric constant is used (`ldc.i4*` / `ldc.i8` / `ldc.r4` / `ldc.r8`) — the number counterpart of `search_string_literals` (magic numbers, item IDs, thresholds). Integer query matches integer constants; a decimal-point query matches floats. Scope with `assembly_name`
 
 #### IL viewing & editing
 

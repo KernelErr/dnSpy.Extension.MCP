@@ -524,6 +524,27 @@ namespace dnSpy.Extension.MCP
                     }
                 },
                 new ToolInfo {
+                    Name = "search_constants",
+                    Description = "Find where a NUMERIC constant is used in code (ldc.i4* / ldc.i8 / ldc.r4 / ldc.r8) — the number counterpart of search_string_literals, completing dnSpy's Search Assemblies set (types / members / strings / numbers). For magic numbers, item IDs, damage values, thresholds. An integer query (e.g. 1337) matches integer constants; a query with a decimal point (e.g. 0.5) matches floating-point constants (r4 compared at float precision). Pass assembly_name to scope — common values like 0 or 1 are everywhere, so scoping to e.g. 'Assembly-CSharp' is strongly recommended. Each hit returns the matched value, opcode, declaring type, method + MDToken, signature, and IL index/offset. Paginated (default page size 10).",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["value"] = new Dictionary<string, object> {
+                                ["description"] = "The numeric constant to find. A whole number matches integer constants; a number with a '.' matches floating-point constants. May also be given as a string."
+                            },
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional. Restrict to a single assembly (strongly recommended). Omit to sweep all loaded modules."
+                            },
+                            ["cursor"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional cursor for pagination (opaque token from previous response). Default page size: 10 results."
+                            }
+                        },
+                        ["required"] = new List<string> { "value" }
+                    }
+                },
+                new ToolInfo {
                     Name = "generate_bepinex_plugin",
                     Description = "Generate a BepInEx plugin template with hooks for specified methods",
                     InputSchema = new Dictionary<string, object> {
@@ -890,6 +911,7 @@ namespace dnSpy.Extension.MCP
                         "find_overrides" => FindOverrides(arguments),
                         "search_string_literals" => SearchStringLiterals(arguments),
                         "list_string_constants" => ListStringConstants(arguments),
+                        "search_constants" => SearchConstants(arguments),
                         "generate_bepinex_plugin" => GenerateBepInExPlugin(arguments),
                         "get_type_fields" => GetTypeFields(arguments),
                         "get_type_property" => GetTypeProperty(arguments),

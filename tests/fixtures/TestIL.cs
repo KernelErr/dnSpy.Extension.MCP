@@ -90,6 +90,16 @@ namespace TestIL
     public class Enemy : BaseEntity { public override int Attack() => 50; }
     public class Boss : Enemy { public override int Attack() => 500; }
 
+    // search_constants coverage: distinctive int / long / double literals. 1337 appears in two
+    // methods (AddMagic uses a runtime arg so the compiler can't constant-fold it away).
+    public static class Numbers
+    {
+        public static int Magic() => 1337;
+        public static int AddMagic(int x) => x + 1337;
+        public static long Big() => 9000000000L;
+        public static double Pi() => 3.14;
+    }
+
     // force_return / nop_method coverage: a bool/int/ref returner to force, and a void method to nop.
     public static class Patchable
     {

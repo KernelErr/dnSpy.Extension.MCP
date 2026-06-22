@@ -574,10 +574,29 @@ try
     try { RpcText 'decompile_type' @{ assembly_name='TestIL'; type_full_name='TestIL.DoesNotExist' } | Out-Null } catch { $dtErr = $_.Exception.Message }
     Assert ($dtErr -and ($dtErr -match 'Type not found')) "decompile_type errors on a missing type" "got: $dtErr"
 
-    # ----- step 25: open_files (load assemblies from disk) — runs LAST: it loads extra copies of
+    # ----- step 25: search_constants (numeric constant search) -----
+    Write-Host ""
+    Write-Host "[25] search_constants on TestIL"
+    $sc1 = Rpc 'search_constants' @{ value=1337; assembly_name='TestIL' }
+    $sc1methods = @($sc1.items | Where-Object { $_.value -eq 1337 } | ForEach-Object { $_.method } | Sort-Object -Unique)
+    Assert (($sc1methods -contains 'Magic') -and ($sc1methods -contains 'AddMagic')) "int constant 1337 found in Magic + AddMagic" "got $($sc1methods -join ',')"
+    Assert (@($sc1.items)[0].opcode -match '^ldc\.i4') "constant hit carries the ldc opcode"
+    # 64-bit integer constant (ldc.i8).
+    $sc2 = Rpc 'search_constants' @{ value=9000000000; assembly_name='TestIL' }
+    $sc2hits = @($sc2.items | Where-Object { $_.method -eq 'Big' -and $_.value -eq 9000000000 })
+    Assert ($sc2hits.Count -ge 1 -and $sc2hits[0].opcode -eq 'ldc.i8') "long constant 9000000000 found in Big (ldc.i8)" "count=$($sc2hits.Count)"
+    # floating-point constant (decimal point -> float/double match).
+    $sc3 = Rpc 'search_constants' @{ value=3.14; assembly_name='TestIL' }
+    $sc3hits = @($sc3.items | Where-Object { $_.method -eq 'Pi' })
+    Assert ($sc3hits.Count -ge 1) "double constant 3.14 found in Pi" "count=$($sc3hits.Count)"
+    # a value that isn't present yields nothing.
+    $sc4 = Rpc 'search_constants' @{ value=424242; assembly_name='TestIL' }
+    Assert (@($sc4.items).Count -eq 0) "absent constant 424242 returns no hits" "got $(@($sc4.items).Count)"
+
+    # ----- step 26: open_files (load assemblies from disk) — runs LAST: it loads extra copies of
     # TestIL, which would add duplicate 'TestIL' entries that earlier single-match lookups don't expect.
     Write-Host ""
-    Write-Host "[25] open_files: load assemblies by file path and by directory"
+    Write-Host "[26] open_files: load assemblies by file path and by directory"
     $openDir = Join-Path $binFixture 'opentest'
     if (Test-Path $openDir) { Remove-Item $openDir -Recurse -Force }
     New-Item -ItemType Directory -Path $openDir | Out-Null
