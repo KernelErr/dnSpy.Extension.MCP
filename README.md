@@ -10,7 +10,7 @@ From zero to "ask Claude about your assembly" in a few minutes:
 
 1. **Get it running.** Download the all-in-one zip for your system from [Releases](https://github.com/KernelErr/dnSpy.Extension.MCP/releases) (the MCP extension is already bundled inside), unzip anywhere, and run `dnSpy.exe`. *Already have dnSpy installed? Use the [plugin-only](#plugin-only-for-users-who-already-have-dnspy-installed) DLL instead.*
 2. **Enable the server.** In dnSpy: **View → Options → MCP Server** → tick **Enable Server** → **OK**. Note the **Port** shown on that page — and check the **Server Log** pane for the port it actually bound to (it falls back to the next free port if yours is taken). Call that `<port>` below. Sanity check: open `http://localhost:<port>/` in a browser (you'll see a status page) or run `curl http://localhost:<port>/health`.
-3. **Load your target.** Open the assembly you want to analyze (**File → Open**, or drag a DLL onto dnSpy) — e.g. a Unity game's `Assembly-CSharp.dll`. The tools operate on whatever is loaded in the tree.
+3. **Load your target.** Open the assembly you want to analyze (**File → Open**, or drag a DLL onto dnSpy) — e.g. a Unity game's `Assembly-CSharp.dll`. The tools operate on whatever is loaded in the tree. *(Or skip this and let the AI load it for you once connected — see `open_files`.)*
 4. **Connect your AI client.** For Claude Code (replace `<port>` with the one from step 2):
    ```bash
    claude mcp add --transport http dnspy http://localhost:<port>
@@ -23,7 +23,11 @@ From zero to "ask Claude about your assembly" in a few minutes:
 
 ## Features
 
-### MCP Tools (23 total)
+### MCP Tools (24 total)
+
+#### Loading
+
+1. **open_files** — load .NET assemblies/modules into dnSpy from disk (like File → Open, driven by the AI). `paths` accepts files and/or directories — open several DLLs at once, or every `*.dll` in a folder (e.g. a Unity game's `Managed` directory; `recursive` / `pattern` supported). Reads metadata only, never executes. Returns per-file `loaded` / `already_loaded` / `failed`
 
 #### Analysis & navigation
 

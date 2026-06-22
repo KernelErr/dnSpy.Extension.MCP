@@ -532,6 +532,32 @@ try
     $rootPage = $null
     try { $rootPage = Invoke-WebRequest -Uri "http://localhost:$($script:Port)/" -UseBasicParsing -TimeoutSec 5 } catch { $rootPage = $_.Exception }
     Assert ($rootPage.StatusCode -eq 200 -and $rootPage.Content -match 'MCP') "browser GET / returns a 200 status page (not 404)" "got: $rootPage"
+
+    # ----- step 23: open_files (load assemblies from disk) — runs LAST: it loads extra copies of
+    # TestIL, which would add duplicate 'TestIL' entries that earlier single-match lookups don't expect.
+    Write-Host ""
+    Write-Host "[23] open_files: load assemblies by file path and by directory"
+    $openDir = Join-Path $binFixture 'opentest'
+    if (Test-Path $openDir) { Remove-Item $openDir -Recurse -Force }
+    New-Item -ItemType Directory -Path $openDir | Out-Null
+    $openA = Join-Path $openDir 'OpenA.dll'
+    Copy-Item $testDll $openA -Force
+    # File mode: a path not yet loaded.
+    $o1 = Rpc 'open_files' @{ paths=@($openA) }
+    Assert ($o1.loaded_count -eq 1 -and $o1.failed_count -eq 0) "open_files loads OpenA.dll (1 new)" "loaded=$($o1.loaded_count) already=$($o1.already_loaded_count) failed=$($o1.failed_count)"
+    Assert (@($o1.loaded | Where-Object { $_.name -eq 'TestIL' }).Count -ge 1) "loaded entry carries assembly name (TestIL)"
+    $afterOpen = @(Rpc 'list_assemblies' @{ name_filter='TestIL' })
+    Assert ((@($afterOpen | Where-Object { $_.Name -eq 'TestIL' }).Count) -ge 2) "newly opened assembly shows up in list_assemblies"
+    # Idempotent: re-opening the same path is reported as already loaded, not reloaded.
+    $o2 = Rpc 'open_files' @{ paths=@($openA) }
+    Assert ($o2.loaded_count -eq 0 -and $o2.already_loaded_count -eq 1) "re-opening the same path reports already_loaded" "loaded=$($o2.loaded_count) already=$($o2.already_loaded_count)"
+    # Directory mode: drop a 2nd copy in and open the whole folder.
+    Copy-Item $testDll (Join-Path $openDir 'OpenB.dll') -Force
+    $o3 = Rpc 'open_files' @{ paths=@($openDir) }
+    Assert ($o3.loaded_count -eq 1 -and $o3.already_loaded_count -eq 1) "directory mode loads new OpenB.dll, skips already-open OpenA.dll" "loaded=$($o3.loaded_count) already=$($o3.already_loaded_count)"
+    # A missing path is reported in failed[], not thrown as a tool error.
+    $o4 = Rpc 'open_files' @{ paths=@('C:\does\not\exist\nope.dll') }
+    Assert ($o4.failed_count -eq 1 -and $o4.loaded_count -eq 0) "missing file reported in failed[] (not a hard error)" "failed=$($o4.failed_count)"
 }
 finally
 {

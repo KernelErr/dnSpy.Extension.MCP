@@ -10,7 +10,7 @@ English: see [README.md](README.md).
 
 1. **跑起来。** 从 [Releases](https://github.com/KernelErr/dnSpy.Extension.MCP/releases) 下载对应系统的一体化压缩包（MCP 扩展已经打包在里面），解压到任意位置，运行 `dnSpy.exe`。*已经装了 dnSpy？改用[仅插件](#安装) 的 DLL。*
 2. **启用服务器。** 在 dnSpy 里：**视图 → 选项 → MCP Server** → 勾选 **Enable Server** → **OK**。记下该页显示的 **Port**——并查看 **Server Log** 面板里实际绑定的端口（你设的端口被占用时会自动顺延到下一个空闲端口）。下文用 `<端口>` 指代它。验证一下：用浏览器打开 `http://localhost:<端口>/`（会看到状态页），或执行 `curl http://localhost:<端口>/health`。
-3. **加载目标。** 打开你要分析的程序集（**File → Open**，或把 DLL 拖进 dnSpy）——例如 Unity 游戏的 `Assembly-CSharp.dll`。工具操作的是树里已加载的内容。
+3. **加载目标。** 打开你要分析的程序集（**File → Open**，或把 DLL 拖进 dnSpy）——例如 Unity 游戏的 `Assembly-CSharp.dll`。工具操作的是树里已加载的内容。*（也可以跳过这步，连上之后让 AI 帮你加载——见 `open_files`。）*
 4. **接入 AI 客户端。** 以 Claude Code 为例（把 `<端口>` 换成第 2 步里的端口）：
    ```bash
    claude mcp add --transport http dnspy http://localhost:<端口>
@@ -23,7 +23,11 @@ English: see [README.md](README.md).
 
 ## 功能
 
-### MCP 工具（共 23 个）
+### MCP 工具（共 24 个）
+
+#### 加载
+
+1. **open_files** — 从磁盘把 .NET 程序集/模块加载进 dnSpy（相当于 AI 驱动的 File → Open）。`paths` 接受文件和/或目录——一次打开多个 DLL，或加载某文件夹下全部 `*.dll`（如 Unity 游戏的 `Managed` 目录；支持 `recursive` / `pattern`）。只读元数据，绝不执行。按文件返回 `loaded` / `already_loaded` / `failed`
 
 #### 分析与导航
 

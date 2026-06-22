@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using dnlib.DotNet;
 using dnSpy.Contracts.Decompiler;
+using dnSpy.Contracts.Documents;
 using dnSpy.Contracts.Documents.Tabs.DocViewer;
 using dnSpy.Contracts.Documents.TreeView;
 using dnSpy.Contracts.Text;
@@ -40,6 +41,29 @@ namespace dnSpy.Extension.MCP
         public List<ToolInfo> GetAvailableTools()
         {
             return new List<ToolInfo> {
+                new ToolInfo {
+                    Name = "open_files",
+                    Description = "Load .NET assemblies/modules into dnSpy from disk so the other tools can analyze them — like dnSpy's File → Open, but driven by the AI. Use this when the assembly you need isn't loaded yet. Each entry in 'paths' may be a FILE (loaded directly) or a DIRECTORY (every file matching 'pattern', default '*.dll', optionally 'recursive') — so you can open several DLLs at once or a whole folder (e.g. a Unity game's 'Managed' directory). Only reads metadata; does not execute the assembly. Returns loaded_count / already_loaded_count / failed_count, a 'loaded' list ({name, path, already_loaded}) and a 'failed' list ({path, error}). Then use list_assemblies / search_types to work with them.",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["paths"] = new Dictionary<string, object> {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object> { ["type"] = "string" },
+                                ["description"] = "File and/or directory paths (absolute recommended). A file is loaded directly; a directory loads every file matching 'pattern'."
+                            },
+                            ["recursive"] = new Dictionary<string, object> {
+                                ["type"] = "boolean",
+                                ["description"] = "Default false. For directory entries, also descend into subdirectories."
+                            },
+                            ["pattern"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Default '*.dll'. Glob applied to directory entries (e.g. '*.exe'). Ignored for file entries."
+                            }
+                        },
+                        ["required"] = new List<string> { "paths" }
+                    }
+                },
                 new ToolInfo {
                     Name = "list_assemblies",
                     Description = "List all loaded assemblies in dnSpy. Unity titles load hundreds of framework modules; pass name_filter (substring or '*' wildcard) to narrow, e.g. 'Assembly-CSharp'.",
@@ -767,6 +791,7 @@ namespace dnSpy.Extension.MCP
                 {
                     return toolName switch
                     {
+                        "open_files" => OpenFiles(arguments),
                         "list_assemblies" => ListAssemblies(arguments),
                         "get_assembly_info" => GetAssemblyInfo(arguments),
                         "list_types" => ListTypes(arguments),
@@ -810,6 +835,111 @@ namespace dnSpy.Extension.MCP
                     };
                 }
             });
+        }
+
+        /// <summary>
+        /// Loads .NET assemblies/modules from disk into dnSpy's document tree so the other tools can
+        /// analyze them — the programmatic equivalent of dnSpy's File → Open. Each entry in
+        /// <c>paths</c> may be a file (loaded directly) or a directory (every file matching
+        /// <c>pattern</c>, default <c>*.dll</c>, optionally recursive). Loading reads metadata via
+        /// dnlib; it does NOT execute the assembly. <see cref="IDsDocumentService.TryGetOrCreate"/>
+        /// adds the document to the service, and the tree view materializes the node from the
+        /// resulting CollectionChanged event — so this runs on the UI thread (ExecuteTool marshals).
+        /// </summary>
+        CallToolResult OpenFiles(Dictionary<string, object>? arguments)
+        {
+            if (arguments == null)
+                throw new ArgumentException("paths is required (array of file and/or directory paths)");
+            var paths = ReadStringArray(arguments, "paths");
+            if (paths == null || paths.Count == 0)
+                throw new ArgumentException("paths is required (array of file and/or directory paths)");
+            var recursive = ReadOptionalBool(arguments, "recursive") ?? false;
+            var pattern = ReadOptionalString(arguments, "pattern") ?? "*.dll";
+
+            var docService = documentTreeView.DocumentService;
+
+            // Snapshot already-open filenames so we can report new vs. already-loaded.
+            var existing = new HashSet<string>(
+                docService.GetDocuments().Select(d => d.Filename).Where(f => !string.IsNullOrEmpty(f)),
+                StringComparer.OrdinalIgnoreCase);
+
+            var failed = new List<object>();
+
+            // Expand inputs (files + directories) into a deduped, ordered file list.
+            var files = new List<string>();
+            var seenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var raw in paths)
+            {
+                if (string.IsNullOrWhiteSpace(raw))
+                    continue;
+                string full;
+                try { full = System.IO.Path.GetFullPath(raw); }
+                catch (Exception ex) { failed.Add(new { path = raw, error = $"invalid path: {ex.Message}" }); continue; }
+
+                if (System.IO.Directory.Exists(full))
+                {
+                    string[] found;
+                    try
+                    {
+                        found = System.IO.Directory.GetFiles(full, pattern,
+                            recursive ? System.IO.SearchOption.AllDirectories : System.IO.SearchOption.TopDirectoryOnly);
+                    }
+                    catch (Exception ex) { failed.Add(new { path = full, error = $"directory scan failed: {ex.Message}" }); continue; }
+                    Array.Sort(found, StringComparer.OrdinalIgnoreCase);
+                    foreach (var f in found)
+                        if (seenFiles.Add(f)) files.Add(f);
+                }
+                else if (System.IO.File.Exists(full))
+                {
+                    if (seenFiles.Add(full)) files.Add(full);
+                }
+                else
+                {
+                    failed.Add(new { path = full, error = "not found (no such file or directory)" });
+                }
+            }
+
+            var loaded = new List<object>();
+            int newCount = 0, alreadyCount = 0;
+            foreach (var f in files)
+            {
+                bool wasLoaded = existing.Contains(f);
+                IDsDocument? doc;
+                try { doc = docService.TryGetOrCreate(DsDocumentInfo.CreateDocument(f)); }
+                catch (Exception ex) { failed.Add(new { path = f, error = $"{ex.GetType().Name}: {ex.Message}" }); continue; }
+                if (doc == null)
+                {
+                    failed.Add(new { path = f, error = "could not load (not a .NET assembly/module?)" });
+                    continue;
+                }
+                if (wasLoaded)
+                    alreadyCount++;
+                else
+                    newCount++;
+                var name = doc.AssemblyDef?.Name.String ?? doc.ModuleDef?.Name.String ?? System.IO.Path.GetFileNameWithoutExtension(f);
+                loaded.Add(new { name, path = doc.Filename, already_loaded = wasLoaded });
+            }
+
+            // Cap the per-file list to keep responses within token budgets; counts stay exact.
+            const int cap = 100;
+            var loadedShown = loaded.Count > cap ? loaded.GetRange(0, cap) : loaded;
+
+            var response = new Dictionary<string, object>
+            {
+                ["loaded_count"] = newCount,
+                ["already_loaded_count"] = alreadyCount,
+                ["failed_count"] = failed.Count,
+                ["loaded"] = loadedShown,
+                ["failed"] = failed,
+            };
+            if (loaded.Count > cap)
+                response["note"] = $"loaded list truncated to first {cap} of {loaded.Count}; use list_assemblies to enumerate.";
+
+            var json = JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
+            return new CallToolResult
+            {
+                Content = new List<ToolContent> { new ToolContent { Text = json } }
+            };
         }
 
         CallToolResult ListAssemblies(Dictionary<string, object>? arguments)
