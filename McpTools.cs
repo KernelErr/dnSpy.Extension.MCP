@@ -269,6 +269,24 @@ namespace dnSpy.Extension.MCP
                     }
                 },
                 new ToolInfo {
+                    Name = "decompile_type",
+                    Description = "Decompile a whole TYPE to C# (all members) — the dnSpy 'click the class and read its source' view. Use it to understand a class in one shot, instead of decompiling members one by one. Nested / compiler-generated types are addressable (separator-tolerant: '.', '+', '/'). For very large types the output can be big — prefer get_type_info (compact=true) for an overview, or decompile_method for a single member.",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Name of the assembly"
+                            },
+                            ["type_full_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Full name of the type (namespace + name; nested types may use '.', '+', or '/')."
+                            }
+                        },
+                        ["required"] = new List<string> { "assembly_name", "type_full_name" }
+                    }
+                },
+                new ToolInfo {
                     Name = "decompile_by_token",
                     Description = "Decompile a method (or type) to C# by MDToken alone — no type name needed. Ideal when you have a token from find_callers / find_references / search_string_literals / list_methods but not the declaring type (also the simplest way to reach nested compiler-generated state machines). Tokens are per-module: pass assembly_name to be exact; without it the token must be unambiguous across loaded assemblies. Method tokens get the same async/iterator state-machine rescue as decompile_method.",
                     InputSchema = new Dictionary<string, object> {
@@ -862,6 +880,7 @@ namespace dnSpy.Extension.MCP
                         "list_types" => ListTypes(arguments),
                         "get_type_info" => GetTypeInfo(arguments),
                         "decompile_method" => DecompileMethod(arguments),
+                        "decompile_type" => DecompileType(arguments),
                         "decompile_by_token" => DecompileByToken(arguments),
                         "search_types" => SearchTypes(arguments),
                         "search_members" => SearchMembers(arguments),
@@ -1410,6 +1429,43 @@ namespace dnSpy.Extension.MCP
             {
                 Content = new List<ToolContent> {
                     new ToolContent { Text = text }
+                }
+            };
+        }
+
+        /// <summary>
+        /// Decompiles a whole type to C# (all members) — the dnSpy "click the class, read the source"
+        /// view. decompile_by_token already does this when you have a TypeDef token; this is the
+        /// by-name entry point. Nested / compiler-generated types resolve via FindTypeInAssembly
+        /// (separator-tolerant). On a very large type the output can be big — prefer get_type_info
+        /// (compact) for an overview, or decompile_method for a single member.
+        /// </summary>
+        CallToolResult DecompileType(Dictionary<string, object>? arguments)
+        {
+            if (arguments == null)
+                throw new ArgumentException("Arguments required");
+            if (!arguments.TryGetValue("assembly_name", out var assemblyNameObj))
+                throw new ArgumentException("assembly_name is required");
+            if (!arguments.TryGetValue("type_full_name", out var typeNameObj))
+                throw new ArgumentException("type_full_name is required");
+
+            var assemblyName = assemblyNameObj.ToString() ?? string.Empty;
+            var typeFullName = typeNameObj.ToString() ?? string.Empty;
+
+            var assembly = FindAssemblyByName(assemblyName);
+            if (assembly == null)
+                throw new ArgumentException($"Assembly not found: {assemblyName}");
+            var type = FindTypeInAssembly(assembly, typeFullName);
+            if (type == null)
+                throw new ArgumentException($"Type not found: {typeFullName}");
+
+            var decompiler = decompilerService.Decompiler;
+            var output = new StringBuilderDecompilerOutput();
+            decompiler.Decompile(type, output, new DecompilationContext { CancellationToken = System.Threading.CancellationToken.None });
+            return new CallToolResult
+            {
+                Content = new List<ToolContent> {
+                    new ToolContent { Text = output.ToString() }
                 }
             };
         }

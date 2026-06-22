@@ -23,7 +23,7 @@ English: see [README.md](README.md).
 
 ## 功能
 
-### MCP 工具（共 26 个）
+### MCP 工具（共 27 个）
 
 #### 加载
 
@@ -42,7 +42,8 @@ English: see [README.md](README.md).
 9. **search_members** — 按通配符或子串搜索**成员**（方法 / 字段 / 属性 / 事件），跨所有程序集（或用 `assembly_name` 限定单个）；`kinds` 按成员种类过滤。它是 `search_types` 的成员级对应物（两者合起来即 dnSpy 的搜索程序集 / Ctrl+Shift+K）。当你在反编译里只看到一个成员名、却不知它属于哪个类型时用它：每条命中含 `declaring_type`、`member_kind`、完整 `signature`、`token`（`MDToken`）、`is_static` / `is_public`——把 `token` 直接喂给 `decompile_by_token`，或把 `declaring_type` + 名字喂给 `find_callers` / `find_references`
 10. **find_path_to_type** — 基于字段/属性对两个类型做 BFS 路径搜索
 11. **decompile_method** — 将方法反编译为 C#（可通过 `parameter_types` / `method_token` 精确区分重载）。嵌套类型可寻址（`Outer/Inner`，`.`/`+`/`/` 都接受），因此可直接反编译状态机的 `MoveNext`。对 async/iterator 的 kickoff，当反编译器无法把状态机内联回 `await`/`yield` 时（Unity 产物常见），会自动把原始 `MoveNext` 体附在后面（`include_state_machine=false` 可关闭）
-12. **decompile_by_token** — 仅凭 `MDToken` 反编译方法（或类型），不需要类型名——特别适合直接拿 xref / 字符串搜索 / 成员搜索结果里的 token（建议带 `assembly_name`,token 是按模块唯一的）。与 `decompile_method` 同样的 async/iterator 兜底
+12. **decompile_type** — 按名字反编译**整个类型**（全部成员）为 C#——"点开类看完整源码"的视图，一次拿全。嵌套类型可寻址。类型很大时建议改用 `get_type_info`（compact）或 `decompile_method`
+13. **decompile_by_token** — 仅凭 `MDToken` 反编译方法（或类型），不需要类型名——特别适合直接拿 xref / 字符串搜索 / 成员搜索结果里的 token（建议带 `assembly_name`,token 是按模块唯一的）。与 `decompile_method` 同样的 async/iterator 兜底
 
 #### 交叉引用（xref）
 

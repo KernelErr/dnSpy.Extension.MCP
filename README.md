@@ -23,7 +23,7 @@ From zero to "ask Claude about your assembly" in a few minutes:
 
 ## Features
 
-### MCP Tools (26 total)
+### MCP Tools (27 total)
 
 #### Loading
 
@@ -42,7 +42,8 @@ From zero to "ask Claude about your assembly" in a few minutes:
 9. **search_members** — wildcard / substring search for *members* (methods / fields / properties / events) by name across all assemblies (or one via `assembly_name`); `kinds` filters by member kind. The member-level counterpart of `search_types` (together they are dnSpy's Search Assemblies / Ctrl+Shift+K). Use it when you have a bare member name from decompiled code but don't know its declaring type: each hit carries `declaring_type`, `member_kind`, full `signature`, `token` (`MDToken`), `is_static` / `is_public` — feed `token` straight to `decompile_by_token`, or `declaring_type` + name to `find_callers` / `find_references`
 10. **find_path_to_type** — BFS over fields/properties to connect two types
 11. **decompile_method** — decompile a method to C# (accepts `parameter_types` / `method_token` to disambiguate overloads). Nested types are addressable (`Outer/Inner`, `.`/`+`/`/` all accepted), so you can decompile a state machine's `MoveNext` directly. For async/iterator kickoffs, when the decompiler can't inline the state machine back into `await`/`yield` (common on Unity output) the raw `MoveNext` body is appended automatically (`include_state_machine=false` to opt out)
-12. **decompile_by_token** — decompile a method (or type) by `MDToken` alone, no type name needed — ideal for tokens straight from xref / string-search / member-search results (`assembly_name` recommended; tokens are per-module). Same async/iterator rescue as `decompile_method`
+12. **decompile_type** — decompile a whole type to C# (all members) by name — the "click the class and read its source" view, in one call. Nested types addressable. For very large types prefer `get_type_info` (compact) or `decompile_method`
+13. **decompile_by_token** — decompile a method (or type) by `MDToken` alone, no type name needed — ideal for tokens straight from xref / string-search / member-search results (`assembly_name` recommended; tokens are per-module). Same async/iterator rescue as `decompile_method`
 
 #### Cross-references (xref)
 

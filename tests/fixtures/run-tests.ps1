@@ -564,10 +564,20 @@ try
     try { $rootPage = Invoke-WebRequest -Uri "http://localhost:$($script:Port)/" -UseBasicParsing -TimeoutSec 5 } catch { $rootPage = $_.Exception }
     Assert ($rootPage.StatusCode -eq 200 -and $rootPage.Content -match 'MCP') "browser GET / returns a 200 status page (not 404)" "got: $rootPage"
 
-    # ----- step 24: open_files (load assemblies from disk) — runs LAST: it loads extra copies of
+    # ----- step 24: decompile_type (whole-type decompilation) -----
+    Write-Host ""
+    Write-Host "[24] decompile_type on TestIL.Simple"
+    $dt = RpcText 'decompile_type' @{ assembly_name='TestIL'; type_full_name='TestIL.Simple' }
+    Assert ($dt -match 'class Simple') "decompile_type emits the type declaration"
+    Assert (($dt -match 'AddOne') -and ($dt -match 'Greet') -and ($dt -match 'Branch')) "decompile_type returns the whole type (multiple members in one call)" "missing members"
+    $dtErr = $null
+    try { RpcText 'decompile_type' @{ assembly_name='TestIL'; type_full_name='TestIL.DoesNotExist' } | Out-Null } catch { $dtErr = $_.Exception.Message }
+    Assert ($dtErr -and ($dtErr -match 'Type not found')) "decompile_type errors on a missing type" "got: $dtErr"
+
+    # ----- step 25: open_files (load assemblies from disk) — runs LAST: it loads extra copies of
     # TestIL, which would add duplicate 'TestIL' entries that earlier single-match lookups don't expect.
     Write-Host ""
-    Write-Host "[24] open_files: load assemblies by file path and by directory"
+    Write-Host "[25] open_files: load assemblies by file path and by directory"
     $openDir = Join-Path $binFixture 'opentest'
     if (Test-Path $openDir) { Remove-Item $openDir -Recurse -Force }
     New-Item -ItemType Directory -Path $openDir | Out-Null
