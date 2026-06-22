@@ -90,6 +90,17 @@ namespace TestIL
     public class Enemy : BaseEntity { public override int Attack() => 50; }
     public class Boss : Enemy { public override int Attack() => 500; }
 
+    // force_return / nop_method coverage: a bool/int/ref returner to force, and a void method to nop.
+    public static class Patchable
+    {
+        public static bool IsPremium() => false;
+        public static int GetCoins() => 5;
+        public static string GetName() => "real";
+
+        public static int sideEffect;
+        public static void Tick() { sideEffect++; }
+    }
+
     // Interface + implementors for find_overrides overridden_by on an interface method:
     // Crate implements TakeDamage implicitly, Wall implements it explicitly.
     public interface IDamageable { int TakeDamage(int amount); }

@@ -520,9 +520,40 @@ try
     $crateSrc = RpcText 'decompile_by_token' @{ token=$crateHit.token; assembly_name='TestIL' }
     Assert ($crateSrc -match 'TakeDamage') "interface-impl token feeds decompile_by_token"
 
-    # ----- step 22: loopback binding — 127.0.0.1 must work, browser GET / must not 404 -----
+    # ----- step 22: force_return / nop_method (high-level body rewrites) — before open_files, which
+    # loads duplicate TestIL copies that would confuse FindAssemblyByName for these patches.
     Write-Host ""
-    Write-Host "[22] server reachable via 127.0.0.1 + browser status page"
+    Write-Host "[22] force_return / nop_method"
+    # The classic move: make a bool method return true.
+    $fr1 = Rpc 'force_return' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='IsPremium'; value=$true }
+    Assert ($fr1.has_pending_patch -eq $true) "force_return sets a pending patch (revertible)"
+    $fr1ops = @($fr1.instructions | ForEach-Object { $_.opcode })
+    Assert (($fr1ops -contains 'ret') -and ($fr1ops.Count -le 3)) "IsPremium reduced to load+ret" "ops=$($fr1ops -join ',')"
+    # Force an int to a constant, and a reference type to default (null).
+    Rpc 'force_return' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='GetCoins'; value=999 } | Out-Null
+    Rpc 'force_return' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='GetName'; value='default' } | Out-Null
+    # nop a void method -> a single ret.
+    $nop = Rpc 'nop_method' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='Tick' }
+    $nopops = @($nop.instructions | ForEach-Object { $_.opcode })
+    Assert (($nopops.Count -eq 1) -and ($nopops[0] -eq 'ret')) "nop_method Tick body is a single ret" "ops=$($nopops -join ',')"
+    # Persist to a side path and prove the rewritten behavior on disk.
+    $forcedPath = Join-Path $binFixture 'TestIL.forced.dll'
+    if (Test-Path $forcedPath) { Remove-Item $forcedPath -Force }
+    Rpc 'save_assembly' @{ assembly_name='TestIL'; output_path=$forcedPath } | Out-Null
+    Assert ((Test-Path $forcedPath)) "force_return side-path saved"
+    $beh = & powershell -NoProfile -Command "[Reflection.Assembly]::LoadFile('$forcedPath') | Out-Null; ('{0}|{1}|{2}' -f [TestIL.Patchable]::IsPremium(), [TestIL.Patchable]::GetCoins(), [string]::IsNullOrEmpty([TestIL.Patchable]::GetName()))"
+    Assert ($beh -eq 'True|999|True') "on disk: IsPremium()=True, GetCoins()=999, GetName()=null" "got $beh"
+    # Revertible like any other patch.
+    $revF = Rpc 'revert_method_il' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='IsPremium' }
+    Assert ($revF.reverted -eq $true) "force_return is revertible via revert_method_il"
+    # force_return with a value on a void method errors helpfully.
+    $voidErr = $null
+    try { Rpc 'force_return' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='Tick'; value=1 } | Out-Null } catch { $voidErr = $_.Exception.Message }
+    Assert ($voidErr -and ($voidErr -match 'void')) "force_return value on a void method errors helpfully" "got: $voidErr"
+
+    # ----- step 23: loopback binding — 127.0.0.1 must work, browser GET / must not 404 -----
+    Write-Host ""
+    Write-Host "[23] server reachable via 127.0.0.1 + browser status page"
     # Before the multi-prefix fix, a localhost-only HttpListener prefix made http.sys reject
     # http://127.0.0.1:<port>/ at the kernel level with HTTP 400 "Invalid Hostname".
     $ipHealth = $null
@@ -533,10 +564,10 @@ try
     try { $rootPage = Invoke-WebRequest -Uri "http://localhost:$($script:Port)/" -UseBasicParsing -TimeoutSec 5 } catch { $rootPage = $_.Exception }
     Assert ($rootPage.StatusCode -eq 200 -and $rootPage.Content -match 'MCP') "browser GET / returns a 200 status page (not 404)" "got: $rootPage"
 
-    # ----- step 23: open_files (load assemblies from disk) — runs LAST: it loads extra copies of
+    # ----- step 24: open_files (load assemblies from disk) — runs LAST: it loads extra copies of
     # TestIL, which would add duplicate 'TestIL' entries that earlier single-match lookups don't expect.
     Write-Host ""
-    Write-Host "[23] open_files: load assemblies by file path and by directory"
+    Write-Host "[24] open_files: load assemblies by file path and by directory"
     $openDir = Join-Path $binFixture 'opentest'
     if (Test-Path $openDir) { Remove-Item $openDir -Recurse -Force }
     New-Item -ItemType Directory -Path $openDir | Out-Null

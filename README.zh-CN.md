@@ -23,7 +23,7 @@ English: see [README.md](README.md).
 
 ## 功能
 
-### MCP 工具（共 24 个）
+### MCP 工具（共 26 个）
 
 #### 加载
 
@@ -60,8 +60,10 @@ English: see [README.md](README.md).
 
 1. **get_method_il** — 方法 IL 指令（index、offset、opcode、operand）+ 局部变量 + 异常处理块 + 方法体标志
 2. **patch_method_il** — 按序执行 `replace` / `insert` / `delete` / `set_init_locals` 编辑；首次补丁会自动快照
-3. **revert_method_il** — 回滚到补丁前的方法体
-4. **save_assembly** — 将模块写回磁盘（覆盖原文件时会自动生成带时间戳的备份，`NativeWrite` 保留本机 stub / Win32 资源 / 延迟加载导入，GAC 路径被拒绝）
+3. **force_return** — 不用手写 IL，直接把方法体改成 `return <值>`（true/false、数字、null 或 `default`）——最常见的"让 `IsPremium()` 返回 true"补丁。void 方法会变成空操作
+4. **nop_method** — 清空方法（void → 单个 `ret`；有返回值 → 返回默认值）。用于让某个 tick/遥测/反作弊调用失效
+5. **revert_method_il** — 回滚到补丁前的方法体（force_return / nop_method 也能回滚）
+6. **save_assembly** — 将模块写回磁盘（覆盖原文件时会自动生成带时间戳的备份，`NativeWrite` 保留本机 stub / Win32 资源 / 延迟加载导入，GAC 路径被拒绝）
 
 #### 代码生成
 

@@ -316,6 +316,237 @@ namespace dnSpy.Extension.MCP
             });
         }
 
+        // ---------- force_return / nop_method (high-level body rewrites) ----------
+        //
+        // These are intent-level wrappers over the same snapshot/revert/save machinery as
+        // patch_method_il: instead of hand-assembling IL, the caller says "make this method return
+        // X" or "make this method do nothing". The classic game-patching moves — bypass a check by
+        // making IsPremium() return true, or empty out a method — without getting the IL stack right.
+
+        CallToolResult ForceReturn(Dictionary<string, object>? arguments)
+            => RewriteBodyToReturn(arguments, nop: false);
+
+        CallToolResult NopMethod(Dictionary<string, object>? arguments)
+            => RewriteBodyToReturn(arguments, nop: true);
+
+        CallToolResult RewriteBodyToReturn(Dictionary<string, object>? arguments, bool nop)
+        {
+            if (arguments == null)
+                throw new ArgumentException("Arguments required");
+            if (!arguments.TryGetValue("assembly_name", out var assemblyNameObj))
+                throw new ArgumentException("assembly_name is required");
+            if (!arguments.TryGetValue("type_full_name", out var typeNameObj))
+                throw new ArgumentException("type_full_name is required");
+            if (!arguments.TryGetValue("method_name", out var methodNameObj))
+                throw new ArgumentException("method_name is required");
+
+            var assemblyName = assemblyNameObj.ToString() ?? string.Empty;
+            var typeFullName = typeNameObj.ToString() ?? string.Empty;
+            var methodName = methodNameObj.ToString() ?? string.Empty;
+            var parameterTypes = ReadStringArray(arguments, "parameter_types");
+            var methodToken = ReadOptionalUInt(arguments, "method_token");
+            // nop_method ignores 'value' (always default); force_return reads it (default if omitted).
+            object? valueRaw = nop ? "default" : (arguments.TryGetValue("value", out var vr) ? vr : null);
+
+            return InvokeOnUiThread(() =>
+            {
+                lock (ilEditLock)
+                {
+                    var assembly = FindAssemblyByName(assemblyName);
+                    if (assembly == null)
+                        throw new ArgumentException($"Assembly not found: {assemblyName}");
+                    var type = FindTypeInAssembly(assembly, typeFullName);
+                    if (type == null)
+                        throw new ArgumentException($"Type not found: {typeFullName}");
+
+                    var method = FindMethod(type, methodName, parameterTypes, methodToken);
+                    if (!method.HasBody || method.Body == null)
+                        throw new ArgumentException($"Method {DescribeSignature(method)} has no IL body (abstract/extern?); cannot rewrite.");
+                    var body = method.Body;
+
+                    // Build the new body first so a bad value/return-type errors before we touch anything.
+                    var (instrs, local, describe) = BuildReturnSequence(method, valueRaw, nop);
+
+                    // Snapshot on first rewrite so revert_method_il can undo (shared with patch_method_il).
+                    if (!ilSnapshots.ContainsKey(method.MDToken.Raw))
+                        ilSnapshots[method.MDToken.Raw] = Snapshot(body);
+
+                    body.ExceptionHandlers.Clear();
+                    body.Variables.Clear();
+                    if (local != null)
+                    {
+                        body.Variables.Add(local);
+                        body.InitLocals = true;
+                    }
+                    body.Instructions.Clear();
+                    foreach (var ins in instrs)
+                        body.Instructions.Add(ins);
+                    body.KeepOldMaxStack = false;   // let the writer recompute MaxStack on save
+                    body.UpdateInstructionOffsets();
+
+                    var projection = SerializeBody(method, body);
+                    projection[nop ? "nopped" : "forced_return"] = true;
+                    projection["return_behavior"] = describe;
+                    var json = JsonSerializer.Serialize(projection, new JsonSerializerOptions { WriteIndented = true });
+                    return new CallToolResult
+                    {
+                        Content = new List<ToolContent> { new ToolContent { Text = json } }
+                    };
+                }
+            });
+        }
+
+        enum RetKind { Default, Null, Bool, Int, Float }
+
+        readonly struct RetValue
+        {
+            public readonly RetKind Kind;
+            public readonly bool Bool;
+            public readonly long Long;
+            public readonly double Double;
+            RetValue(RetKind k, bool b, long l, double d) { Kind = k; Bool = b; Long = l; Double = d; }
+            public static RetValue Def => new RetValue(RetKind.Default, false, 0, 0);
+            public static RetValue Nul => new RetValue(RetKind.Null, false, 0, 0);
+            public static RetValue B(bool b) => new RetValue(RetKind.Bool, b, b ? 1 : 0, 0);
+            public static RetValue I(long l) => new RetValue(RetKind.Int, l != 0, l, l);
+            public static RetValue F(double d) => new RetValue(RetKind.Float, d != 0, 0, d);
+            public long RequireInt() => Kind == RetKind.Int ? Long : throw new ArgumentException("expected an integer 'value' for this return type");
+            public double RequireFloat() => Kind == RetKind.Float ? Double : Kind == RetKind.Int ? Long : throw new ArgumentException("expected a numeric 'value' for this return type");
+        }
+
+        static RetValue ParseReturnValue(object? raw)
+        {
+            switch (raw)
+            {
+                case null: return RetValue.Def;
+                case bool b: return RetValue.B(b);
+                case int i: return RetValue.I(i);
+                case long l: return RetValue.I(l);
+                case double d: return RetValue.F(d);
+                case string s: return ParseReturnString(s);
+                case JsonElement el:
+                    switch (el.ValueKind)
+                    {
+                        case JsonValueKind.True: return RetValue.B(true);
+                        case JsonValueKind.False: return RetValue.B(false);
+                        case JsonValueKind.Null: return RetValue.Def;
+                        case JsonValueKind.Number:
+                            return el.TryGetInt64(out var n) ? RetValue.I(n) : RetValue.F(el.GetDouble());
+                        case JsonValueKind.String: return ParseReturnString(el.GetString());
+                        default: throw new ArgumentException("'value' must be a bool, number, null, or default");
+                    }
+                default: throw new ArgumentException("'value' must be a bool, number, null, or default");
+            }
+        }
+
+        static RetValue ParseReturnString(string? s)
+        {
+            s = (s ?? string.Empty).Trim();
+            if (s.Length == 0 || s.Equals("default", StringComparison.OrdinalIgnoreCase)) return RetValue.Def;
+            if (s.Equals("null", StringComparison.OrdinalIgnoreCase)) return RetValue.Nul;
+            if (s.Equals("true", StringComparison.OrdinalIgnoreCase)) return RetValue.B(true);
+            if (s.Equals("false", StringComparison.OrdinalIgnoreCase)) return RetValue.B(false);
+            if (long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var l)) return RetValue.I(l);
+            if (double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var d)) return RetValue.F(d);
+            throw new ArgumentException($"could not parse 'value' = '{s}' (use true/false, a number, null, or default)");
+        }
+
+        // Builds the replacement instruction list for force_return / nop_method from the method's
+        // return type and the requested value. Returns (instructions, optional local to add, note).
+        static (List<Instruction> instrs, Local? local, string describe) BuildReturnSequence(MethodDef method, object? valueRaw, bool nop)
+        {
+            var retSig = method.ReturnType;
+            var et = retSig?.ElementType ?? ElementType.Void;
+            var instrs = new List<Instruction>();
+
+            if (et == ElementType.Void)
+            {
+                if (!nop && ParseReturnValue(valueRaw).Kind != RetKind.Default)
+                    throw new ArgumentException("method returns void; omit 'value' (or use nop_method) — there is nothing to return.");
+                instrs.Add(Instruction.Create(OpCodes.Ret));
+                return (instrs, null, "void → returns immediately (no-op)");
+            }
+
+            var rv = ParseReturnValue(valueRaw);
+
+            switch (et)
+            {
+                case ElementType.Boolean:
+                {
+                    int b = rv.Kind == RetKind.Default ? 0 : rv.Bool ? 1 : 0;
+                    instrs.Add(Instruction.CreateLdcI4(b));
+                    instrs.Add(Instruction.Create(OpCodes.Ret));
+                    return (instrs, null, $"bool → {(b != 0 ? "true" : "false")}");
+                }
+                case ElementType.Char:
+                case ElementType.I1: case ElementType.U1:
+                case ElementType.I2: case ElementType.U2:
+                case ElementType.I4: case ElementType.U4:
+                {
+                    int n = rv.Kind == RetKind.Default ? 0 : checked((int)rv.RequireInt());
+                    instrs.Add(Instruction.CreateLdcI4(n));
+                    instrs.Add(Instruction.Create(OpCodes.Ret));
+                    return (instrs, null, $"int → {n}");
+                }
+                case ElementType.I8: case ElementType.U8:
+                {
+                    long n = rv.Kind == RetKind.Default ? 0L : rv.RequireInt();
+                    instrs.Add(Instruction.Create(OpCodes.Ldc_I8, n));
+                    instrs.Add(Instruction.Create(OpCodes.Ret));
+                    return (instrs, null, $"long → {n}");
+                }
+                case ElementType.R4:
+                {
+                    float n = rv.Kind == RetKind.Default ? 0f : (float)rv.RequireFloat();
+                    instrs.Add(Instruction.Create(OpCodes.Ldc_R4, n));
+                    instrs.Add(Instruction.Create(OpCodes.Ret));
+                    return (instrs, null, $"float → {n}");
+                }
+                case ElementType.R8:
+                {
+                    double n = rv.Kind == RetKind.Default ? 0d : rv.RequireFloat();
+                    instrs.Add(Instruction.Create(OpCodes.Ldc_R8, n));
+                    instrs.Add(Instruction.Create(OpCodes.Ret));
+                    return (instrs, null, $"double → {n}");
+                }
+                case ElementType.String:
+                case ElementType.Object:
+                case ElementType.Class:
+                case ElementType.Array:
+                case ElementType.SZArray:
+                case ElementType.Ptr:
+                case ElementType.FnPtr:
+                {
+                    if (rv.Kind != RetKind.Default && rv.Kind != RetKind.Null)
+                        throw new ArgumentException($"return type {retSig} is a reference type; only null/default is supported.");
+                    instrs.Add(Instruction.Create(OpCodes.Ldnull));
+                    instrs.Add(Instruction.Create(OpCodes.Ret));
+                    return (instrs, null, "reference type → null");
+                }
+                default:
+                {
+                    // Value types: enum (emit underlying integer) or struct/Nullable<T> (default only).
+                    var tdr = retSig!.ToTypeDefOrRef();
+                    var td = tdr?.ResolveTypeDef();
+                    if (td != null && td.IsEnum)
+                    {
+                        long n = rv.Kind == RetKind.Default ? 0L : rv.RequireInt();
+                        instrs.Add(Instruction.CreateLdcI4(checked((int)n)));
+                        instrs.Add(Instruction.Create(OpCodes.Ret));
+                        return (instrs, null, $"enum → {n}");
+                    }
+                    if (rv.Kind != RetKind.Default)
+                        throw new ArgumentException($"return type {retSig} is a value type; only 'default' is supported (cannot synthesize a concrete struct).");
+                    var local = new Local(retSig);
+                    instrs.Add(Instruction.Create(OpCodes.Ldloca, local));
+                    instrs.Add(Instruction.Create(OpCodes.Initobj, tdr));
+                    instrs.Add(Instruction.Create(OpCodes.Ldloc, local));
+                    instrs.Add(Instruction.Create(OpCodes.Ret));
+                    return (instrs, local, $"value type → default({retSig})");
+                }
+            }
+        }
+
         // ---------- snapshot helper ----------
 
         static CilBodySnapshot Snapshot(CilBody body) => new CilBodySnapshot

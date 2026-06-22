@@ -23,7 +23,7 @@ From zero to "ask Claude about your assembly" in a few minutes:
 
 ## Features
 
-### MCP Tools (24 total)
+### MCP Tools (26 total)
 
 #### Loading
 
@@ -60,8 +60,10 @@ From zero to "ask Claude about your assembly" in a few minutes:
 
 1. **get_method_il** — instructions (index, offset, opcode, operand) + locals + exception handlers + body flags
 2. **patch_method_il** — ordered `replace` / `insert` / `delete` / `set_init_locals` edits; snapshot-on-first-patch
-3. **revert_method_il** — restore the pre-patch body shape
-4. **save_assembly** — write the module to disk (timestamped backup on overwrite, `NativeWrite` preserves native stubs / Win32 resources / delay-loaded imports, GAC refused)
+3. **force_return** — replace a body with `return <value>` (true/false, a number, null, or `default`) without hand-writing IL — the common "make `IsPremium()` return true" patch. Void methods become a no-op
+4. **nop_method** — empty a method out (void → bare `ret`; value-returning → return default). For neutralizing a tick/telemetry/anti-cheat call
+5. **revert_method_il** — restore the pre-patch body shape (also undoes force_return / nop_method)
+6. **save_assembly** — write the module to disk (timestamped backup on overwrite, `NativeWrite` preserves native stubs / Win32 resources / delay-loaded imports, GAC refused)
 
 #### Codegen
 

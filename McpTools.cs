@@ -733,6 +733,71 @@ namespace dnSpy.Extension.MCP
                     }
                 },
                 new ToolInfo {
+                    Name = "force_return",
+                    Description = "Patch a method so it immediately returns a given value — the high-level alternative to hand-assembling IL with patch_method_il for the most common game-patching move (e.g. make IsPremium() return true, or a damage check return 0). Replaces the whole body with 'load value; ret'. 'value' accepts: true/false, a number, null, or 'default' (zero/null/empty-struct for the return type); omit it for default. Void methods are turned into a no-op (an immediate ret) — passing a value then is an error (use nop_method). Reference-return methods only accept null/default; structs only accept default. Shares the snapshot mechanism with patch_method_il: revert_method_il undoes it and save_assembly persists it. Disambiguate overloads with parameter_types / method_token.",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Assembly that declares the method"
+                            },
+                            ["type_full_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Full name of the type that declares the method"
+                            },
+                            ["method_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Name of the method to rewrite"
+                            },
+                            ["value"] = new Dictionary<string, object> {
+                                ["description"] = "Value to return: a boolean, a number, null, or the string 'default'. Omit for the return type's default. Ignored/invalid for void methods."
+                            },
+                            ["parameter_types"] = new Dictionary<string, object> {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object> { ["type"] = "string" },
+                                ["description"] = "Optional. Fully-qualified parameter type names to disambiguate an overloaded method."
+                            },
+                            ["method_token"] = new Dictionary<string, object> {
+                                ["type"] = "integer",
+                                ["description"] = "Optional. MDToken.Raw (uint) of the method. Takes precedence over parameter_types."
+                            }
+                        },
+                        ["required"] = new List<string> { "assembly_name", "type_full_name", "method_name" }
+                    }
+                },
+                new ToolInfo {
+                    Name = "nop_method",
+                    Description = "Empty out a method so it does nothing: a void method becomes a single 'ret'; a value-returning method returns its default (zero/null/empty-struct). Equivalent to force_return with value='default'. Use it to neutralize a method (e.g. disable an anti-cheat tick or a telemetry call). Shares the snapshot mechanism with patch_method_il — revert_method_il undoes it, save_assembly persists it. Disambiguate overloads with parameter_types / method_token.",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Assembly that declares the method"
+                            },
+                            ["type_full_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Full name of the type that declares the method"
+                            },
+                            ["method_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Name of the method to empty out"
+                            },
+                            ["parameter_types"] = new Dictionary<string, object> {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object> { ["type"] = "string" },
+                                ["description"] = "Optional. Fully-qualified parameter type names to disambiguate an overloaded method."
+                            },
+                            ["method_token"] = new Dictionary<string, object> {
+                                ["type"] = "integer",
+                                ["description"] = "Optional. MDToken.Raw (uint) of the method. Takes precedence over parameter_types."
+                            }
+                        },
+                        ["required"] = new List<string> { "assembly_name", "type_full_name", "method_name" }
+                    }
+                },
+                new ToolInfo {
                     Name = "revert_method_il",
                     Description = "Restore the method body that was captured on first patch_method_il. Fails with -32602 if no pending snapshot exists for the method.",
                     InputSchema = new Dictionary<string, object> {
@@ -813,6 +878,8 @@ namespace dnSpy.Extension.MCP
                         "list_methods" => ListMethods(arguments),
                         "get_method_il" => GetMethodIL(arguments),
                         "patch_method_il" => PatchMethodIL(arguments),
+                        "force_return" => ForceReturn(arguments),
+                        "nop_method" => NopMethod(arguments),
                         "revert_method_il" => RevertMethodIL(arguments),
                         "save_assembly" => SaveAssembly(arguments),
                         _ => new CallToolResult
