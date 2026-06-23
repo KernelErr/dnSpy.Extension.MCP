@@ -631,6 +631,33 @@ try
     # A missing path is reported in failed[], not thrown as a tool error.
     $o4 = Rpc 'open_files' @{ paths=@('C:\does\not\exist\nope.dll') }
     Assert ($o4.failed_count -eq 1 -and $o4.loaded_count -eq 0) "missing file reported in failed[] (not a hard error)" "failed=$($o4.failed_count)"
+
+    # ----- step 27: generate_harmony_patch (signature-aware patch codegen) — read-only, resolves the
+    # original TestIL deterministically even with the duplicate copies open_files just loaded.
+    Write-Host ""
+    Write-Host "[27] generate_harmony_patch: signature-aware Harmony patches"
+    # Static int method -> postfix with `ref int __result`, no __instance.
+    $hp1 = RpcText 'generate_harmony_patch' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='GetCoins' }
+    Assert ($hp1 -match '\[HarmonyPatch\(typeof\(TestIL\.Patchable\), "GetCoins"\)\]') "postfix emits the HarmonyPatch attribute"
+    Assert ($hp1 -match 'static void Postfix\(ref int __result\)') "postfix injects ref int __result for an int return" "src:`n$hp1"
+    Assert ($hp1 -notmatch '__instance') "static method postfix has no __instance"
+    # Prefix returns bool (so user can skip the original).
+    $hp2 = RpcText 'generate_harmony_patch' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='IsPremium'; patch_type='prefix' }
+    Assert ($hp2 -match 'static bool Prefix\(') "prefix returns bool"
+    # Instance method -> injects the declaring type as __instance.
+    $hp3 = RpcText 'generate_harmony_patch' @{ assembly_name='TestIL'; type_full_name='TestIL.Members'; method_name='Die' }
+    Assert ($hp3 -match 'TestIL\.Members __instance') "instance method injects __instance of the declaring type" "src:`n$hp3"
+    # Overloaded method -> Type[] disambiguation + original params by name.
+    $hp4 = RpcText 'generate_harmony_patch' @{ assembly_name='TestIL'; type_full_name='TestIL.Simple'; method_name='Add'; parameter_types=@('System.Int32','System.Int32','System.Int32') }
+    Assert ($hp4 -match 'new Type\[\] \{ typeof\(int\), typeof\(int\), typeof\(int\) \}') "overloaded method gets a Type[] disambiguator" "src:`n$hp4"
+    Assert (($hp4 -match '\bint a\b') -and ($hp4 -match '\bint b\b') -and ($hp4 -match '\bint c\b')) "original parameters injected by name (a, b, c)" "src:`n$hp4"
+    # transpiler skeleton.
+    $hp5 = RpcText 'generate_harmony_patch' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='GetCoins'; patch_type='transpiler' }
+    Assert ($hp5 -match 'IEnumerable<CodeInstruction> Transpiler') "transpiler emits the standard signature"
+    # bad patch_type errors.
+    $hpErr = $null
+    try { RpcText 'generate_harmony_patch' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='GetCoins'; patch_type='sidefix' } | Out-Null } catch { $hpErr = $_.Exception.Message }
+    Assert ($hpErr -and ($hpErr -match 'unknown patch_type')) "invalid patch_type errors with guidance" "got: $hpErr"
 }
 finally
 {

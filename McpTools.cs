@@ -578,6 +578,42 @@ namespace dnSpy.Extension.MCP
                     }
                 },
                 new ToolInfo {
+                    Name = "generate_harmony_patch",
+                    Description = "Generate a compile-ready HarmonyX patch class for a REAL method, with the correct injected parameters read from its actual signature — unlike the empty stubs from generate_bepinex_plugin. Resolves the method (assembly + type + name, with parameter_types / method_token for overloads) and emits: the [HarmonyPatch(typeof(T), \"M\")] attribute (adding a new Type[]{...} array when the name is overloaded), `__instance` for instance methods, `ref <ReturnType> __result` for a non-void postfix, and the original parameters by name (positional __0/__1 if names were stripped). patch_type = postfix (default, for reading/altering the return value), prefix (returns bool — return false to skip the original), or transpiler (IL-rewrite skeleton). Non-primitive types are fully qualified so it compiles as-is.",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Assembly that declares the method to patch"
+                            },
+                            ["type_full_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Full name of the type that declares the method"
+                            },
+                            ["method_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Name of the method to patch (.ctor for a constructor)"
+                            },
+                            ["patch_type"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["enum"] = new List<string> { "postfix", "prefix", "transpiler" },
+                                ["description"] = "postfix (default): run after, modify __result. prefix: run before, return false to skip the original. transpiler: IL-rewrite skeleton."
+                            },
+                            ["parameter_types"] = new Dictionary<string, object> {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object> { ["type"] = "string" },
+                                ["description"] = "Optional. Fully-qualified parameter type names to disambiguate an overloaded method."
+                            },
+                            ["method_token"] = new Dictionary<string, object> {
+                                ["type"] = "integer",
+                                ["description"] = "Optional. MDToken.Raw (uint) of the method. Takes precedence over parameter_types."
+                            }
+                        },
+                        ["required"] = new List<string> { "assembly_name", "type_full_name", "method_name" }
+                    }
+                },
+                new ToolInfo {
                     Name = "get_type_fields",
                     Description = "Get fields from a type matching a name pattern (supports wildcards like *Bonus*). Supports pagination with default page size of 10 fields.",
                     InputSchema = new Dictionary<string, object> {
@@ -913,6 +949,7 @@ namespace dnSpy.Extension.MCP
                         "list_string_constants" => ListStringConstants(arguments),
                         "search_constants" => SearchConstants(arguments),
                         "generate_bepinex_plugin" => GenerateBepInExPlugin(arguments),
+                        "generate_harmony_patch" => GenerateHarmonyPatch(arguments),
                         "get_type_fields" => GetTypeFields(arguments),
                         "get_type_property" => GetTypeProperty(arguments),
                         "find_path_to_type" => FindPathToType(arguments),
@@ -1863,6 +1900,235 @@ namespace dnSpy.Extension.MCP
                     new ToolContent { Text = sb.ToString() }
                 }
             };
+        }
+
+        /// <summary>
+        /// Generates a compile-ready Harmony patch class for a REAL method — reads the method's actual
+        /// signature and injects the correct Harmony parameters (`__instance` for instance methods,
+        /// `ref &lt;RetType&gt; __result` for a non-void postfix, the original parameters by name) instead
+        /// of the empty stubs generate_bepinex_plugin emits. This is what closes the analyze→patch loop:
+        /// the signature data we already resolve is finally carried into the generated code.
+        /// </summary>
+        CallToolResult GenerateHarmonyPatch(Dictionary<string, object>? arguments)
+        {
+            if (arguments == null)
+                throw new ArgumentException("Arguments required");
+            if (!arguments.TryGetValue("assembly_name", out var assemblyNameObj))
+                throw new ArgumentException("assembly_name is required");
+            if (!arguments.TryGetValue("type_full_name", out var typeNameObj))
+                throw new ArgumentException("type_full_name is required");
+            if (!arguments.TryGetValue("method_name", out var methodNameObj))
+                throw new ArgumentException("method_name is required");
+
+            var assemblyName = assemblyNameObj.ToString() ?? string.Empty;
+            var typeFullName = typeNameObj.ToString() ?? string.Empty;
+            var methodName = methodNameObj.ToString() ?? string.Empty;
+            var parameterTypes = ReadStringArray(arguments, "parameter_types");
+            var methodToken = ReadOptionalUInt(arguments, "method_token");
+            var patchType = (ReadOptionalString(arguments, "patch_type") ?? "postfix").Trim().ToLowerInvariant();
+            if (patchType != "postfix" && patchType != "prefix" && patchType != "transpiler")
+                throw new ArgumentException($"unknown patch_type '{patchType}' (expected postfix, prefix, or transpiler)");
+
+            var assembly = FindAssemblyByName(assemblyName);
+            if (assembly == null)
+                throw new ArgumentException($"Assembly not found: {assemblyName}");
+            var type = FindTypeInAssembly(assembly, typeFullName);
+            if (type == null)
+                throw new ArgumentException($"Type not found: {typeFullName}");
+            var method = FindMethod(type, methodName, parameterTypes, methodToken);
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"// Harmony {patchType} patch for {DescribeSignature(method)}");
+            sb.AppendLine("// Drop this class into your BepInEx plugin; harmony.PatchAll() in Awake() applies it.");
+            sb.AppendLine("// Non-primitive parameter types are fully qualified so it compiles without extra usings.");
+            sb.AppendLine("using HarmonyLib;");
+            sb.AppendLine("using System;");
+            if (patchType == "transpiler")
+            {
+                sb.AppendLine("using System.Collections.Generic;");
+                sb.AppendLine("using System.Reflection.Emit;");
+            }
+            sb.AppendLine();
+            sb.Append(BuildHarmonyPatchClass(method, patchType));
+
+            return new CallToolResult
+            {
+                Content = new List<ToolContent> {
+                    new ToolContent { Text = sb.ToString() }
+                }
+            };
+        }
+
+        /// <summary>
+        /// Builds the `[HarmonyPatch] class { ... }` text for <paramref name="method"/> (no using
+        /// directives — the caller adds those). Shared by generate_harmony_patch and the upgraded
+        /// generate_bepinex_plugin so both emit identical, signature-correct code.
+        /// </summary>
+        string BuildHarmonyPatchClass(MethodDef method, string patchType)
+        {
+            var declType = method.DeclaringType;
+            var declCs = CSharpTypeName(declType.ToTypeSig());
+            bool isCtor = method.Name == ".ctor" || method.Name == ".cctor";
+            bool isInstance = !method.IsStatic && !isCtor;
+            var ret = method.ReturnType;
+            bool hasReturn = ret != null && ret.ElementType != ElementType.Void;
+
+            // Original (non-this) parameters, with a positional fallback (__0, __1) when names are stripped.
+            var pars = method.Parameters.Where(p => p.IsNormalMethodParameter).ToList();
+            var paramInfos = new List<(string type, string name, bool byRef)>();
+            for (int i = 0; i < pars.Count; i++)
+            {
+                var p = pars[i];
+                var sig = p.Type;
+                bool byRef = sig != null && sig.ElementType == ElementType.ByRef;
+                var elemSig = byRef ? sig!.Next : sig;
+                var nm = string.IsNullOrEmpty(p.Name) ? $"__{i}" : p.Name;
+                paramInfos.Add((CSharpTypeName(elemSig), nm, byRef));
+            }
+
+            // Overload disambiguation: only needed when a sibling overload shares the name.
+            bool overloaded = method.DeclaringType.Methods.Count(m => m.Name == method.Name) > 1;
+
+            var sb = new StringBuilder();
+
+            // ---- [HarmonyPatch(...)] attribute ----
+            if (isCtor)
+                sb.AppendLine($"[HarmonyPatch(typeof({declCs}), MethodType.Constructor)]");
+            else if (overloaded && paramInfos.Count > 0)
+            {
+                var typeArr = string.Join(", ", paramInfos.Select(p => p.byRef
+                    ? $"typeof({p.type}).MakeByRefType()"
+                    : $"typeof({p.type})"));
+                sb.AppendLine($"[HarmonyPatch(typeof({declCs}), \"{method.Name}\", new Type[] {{ {typeArr} }})]");
+            }
+            else
+                sb.AppendLine($"[HarmonyPatch(typeof({declCs}), \"{method.Name}\")]");
+
+            var className = MakePatchClassName(method);
+            sb.AppendLine($"internal static class {className}");
+            sb.AppendLine("{");
+
+            if (patchType == "transpiler")
+            {
+                sb.AppendLine("    static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)");
+                sb.AppendLine("    {");
+                sb.AppendLine("        foreach (var instr in instructions)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            // Inspect / replace IL here; yield each instruction you want to keep.");
+                sb.AppendLine("            yield return instr;");
+                sb.AppendLine("        }");
+                sb.AppendLine("    }");
+            }
+            else
+            {
+                var ps = new List<string>();
+                if (patchType == "postfix" && hasReturn)
+                    ps.Add($"ref {CSharpTypeName(ret)} __result");
+                if (isInstance)
+                    ps.Add($"{declCs} __instance");
+                foreach (var p in paramInfos)
+                    ps.Add($"{p.type} {p.name}");
+
+                if (patchType == "prefix")
+                {
+                    sb.AppendLine($"    static bool Prefix({string.Join(", ", ps)})");
+                    sb.AppendLine("    {");
+                    sb.AppendLine("        // Runs before the original method.");
+                    sb.AppendLine("        // 'return false' to SKIP the original (and keep __result if you set it);");
+                    sb.AppendLine("        // add 'ref' before a parameter above to change what the original receives.");
+                    sb.AppendLine("        return true;");
+                    sb.AppendLine("    }");
+                }
+                else
+                {
+                    sb.AppendLine($"    static void Postfix({string.Join(", ", ps)})");
+                    sb.AppendLine("    {");
+                    if (hasReturn)
+                        sb.AppendLine("        // Runs after the original method. Modify __result to change the return value.");
+                    else
+                        sb.AppendLine("        // Runs after the original method.");
+                    sb.AppendLine("    }");
+                }
+            }
+
+            sb.AppendLine("}");
+            return sb.ToString();
+        }
+
+        static string MakePatchClassName(MethodDef method)
+        {
+            var raw = $"{method.DeclaringType.Name}_{method.Name}_Patch";
+            var cleaned = new StringBuilder();
+            foreach (var ch in raw)
+                cleaned.Append(char.IsLetterOrDigit(ch) || ch == '_' ? ch : '_');
+            var s = cleaned.ToString();
+            if (s.Length > 0 && char.IsDigit(s[0]))
+                s = "_" + s;
+            return s;
+        }
+
+        /// <summary>
+        /// Renders a dnlib <see cref="TypeSig"/> as a compilable C# type name: primitives become
+        /// keywords, generics become Outer&lt;Arg, ...&gt;, arrays become T[], everything else is the
+        /// fully-qualified name (nested '/' → '.') so the generated patch compiles without guessing usings.
+        /// </summary>
+        static string CSharpTypeName(TypeSig? sig)
+        {
+            if (sig == null)
+                return "object";
+            switch (sig.ElementType)
+            {
+                case ElementType.Void: return "void";
+                case ElementType.Boolean: return "bool";
+                case ElementType.Char: return "char";
+                case ElementType.I1: return "sbyte";
+                case ElementType.U1: return "byte";
+                case ElementType.I2: return "short";
+                case ElementType.U2: return "ushort";
+                case ElementType.I4: return "int";
+                case ElementType.U4: return "uint";
+                case ElementType.I8: return "long";
+                case ElementType.U8: return "ulong";
+                case ElementType.R4: return "float";
+                case ElementType.R8: return "double";
+                case ElementType.String: return "string";
+                case ElementType.Object: return "object";
+                case ElementType.I: return "System.IntPtr";
+                case ElementType.U: return "System.UIntPtr";
+                case ElementType.ByRef: return CSharpTypeName(sig.Next);
+                case ElementType.Ptr: return CSharpTypeName(sig.Next) + "*";
+                case ElementType.SZArray: return CSharpTypeName(sig.Next) + "[]";
+                case ElementType.Array:
+                {
+                    var rank = sig is ArraySig a ? (int)a.Rank : 1;
+                    return CSharpTypeName(sig.Next) + "[" + new string(',', Math.Max(0, rank - 1)) + "]";
+                }
+                case ElementType.GenericInst:
+                {
+                    var gi = (GenericInstSig)sig;
+                    var genName = CleanGenericTypeName(gi.GenericType?.TypeDefOrRef?.FullName);
+                    // Nullable<T> reads better as T?.
+                    if (genName == "System.Nullable" && gi.GenericArguments.Count == 1)
+                        return CSharpTypeName(gi.GenericArguments[0]) + "?";
+                    var args = string.Join(", ", gi.GenericArguments.Select(CSharpTypeName));
+                    return $"{genName}<{args}>";
+                }
+                case ElementType.Var:
+                case ElementType.MVar:
+                    return sig.TypeName;
+                default:
+                    return CleanGenericTypeName(sig.ToTypeDefOrRef()?.FullName) ?? sig.TypeName;
+            }
+        }
+
+        // Strips dnlib's `N arity suffix and normalizes nested-type '/' to '.'.
+        static string CleanGenericTypeName(string? fullName)
+        {
+            if (string.IsNullOrEmpty(fullName))
+                return "object";
+            var s = fullName!.Replace('/', '.');
+            var tick = s.IndexOf('`');
+            return tick >= 0 ? s.Substring(0, tick) : s;
         }
 
         CallToolResult GetTypeFields(Dictionary<string, object>? arguments)

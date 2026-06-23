@@ -23,7 +23,7 @@ English: see [README.md](README.md).
 
 ## 功能
 
-### MCP 工具（共 28 个）
+### MCP 工具（共 29 个）
 
 #### 加载
 
@@ -70,6 +70,7 @@ English: see [README.md](README.md).
 #### 代码生成
 
 1. **generate_bepinex_plugin** — 生成带 Harmony 钩子的 BepInEx 插件模板
+2. **generate_harmony_patch** — 针对**真实方法**生成可直接编译的 HarmonyX 补丁类，按其实际签名注入正确参数：postfix 带 `ref <返回类型> __result`、实例方法带 `__instance`、原方法参数按名注入、方法名重载时补 `new Type[]{...}` 消歧。`patch_type` = postfix / prefix（返回 bool 可跳过原方法）/ transpiler
 
 ### MCP 资源（共 6 个）
 

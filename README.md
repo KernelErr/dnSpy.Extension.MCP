@@ -23,7 +23,7 @@ From zero to "ask Claude about your assembly" in a few minutes:
 
 ## Features
 
-### MCP Tools (28 total)
+### MCP Tools (29 total)
 
 #### Loading
 
@@ -70,6 +70,7 @@ From zero to "ask Claude about your assembly" in a few minutes:
 #### Codegen
 
 1. **generate_bepinex_plugin** — BepInEx plugin template with Harmony hooks
+2. **generate_harmony_patch** — a compile-ready HarmonyX patch class for a *real* method, with the right injected params read from its actual signature: `ref <ReturnType> __result` for a postfix, `__instance` for instance methods, the original parameters by name, and a `new Type[]{...}` disambiguator when the name is overloaded. `patch_type` = postfix / prefix (returns bool to skip the original) / transpiler
 
 ### MCP Resources (6 total)
 
