@@ -598,8 +598,9 @@ try
     $sc5testil = @($sc5.items | Where-Object { $_.assembly -eq 'TestIL' -and $_.value -eq 1337 })
     Assert ($sc5testil.Count -ge 2) "unscoped search_constants still finds TestIL's 1337 sites across all modules" "count=$($sc5testil.Count)"
 
-    # ----- step 26: open_files (load assemblies from disk) — runs LAST: it loads extra copies of
-    # TestIL, which would add duplicate 'TestIL' entries that earlier single-match lookups don't expect.
+    # ----- step 26: open_files (load assemblies from disk). It loads extra copies of TestIL, which
+    # add duplicate 'TestIL' entries; tools after this scope by assembly_name and FindAssemblyByName
+    # returns the first (original) match, so the read-only steps below stay deterministic.
     Write-Host ""
     Write-Host "[26] open_files: load assemblies by file path and by directory"
     $openDir = Join-Path $binFixture 'opentest'
@@ -658,6 +659,20 @@ try
     $hpErr = $null
     try { RpcText 'generate_harmony_patch' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='GetCoins'; patch_type='sidefix' } | Out-Null } catch { $hpErr = $_.Exception.Message }
     Assert ($hpErr -and ($hpErr -match 'unknown patch_type')) "invalid patch_type errors with guidance" "got: $hpErr"
+
+    # ----- step 28: find_unity_messages (engine-invoked methods with no IL call site) -----
+    Write-Host ""
+    Write-Host "[28] find_unity_messages on TestIL.UnityComponent"
+    $um = Rpc 'find_unity_messages' @{ assembly_name='TestIL'; type_full_name='TestIL.UnityComponent' }
+    $umNames = @($um.items | ForEach-Object { $_.message } | Sort-Object -Unique)
+    Assert (($umNames -contains 'Awake') -and ($umNames -contains 'Update') -and ($umNames -contains 'OnTriggerEnter')) "finds Awake + Update + OnTriggerEnter" "got $($umNames -join ',')"
+    Assert ($umNames -notcontains 'NotAMessage') "does not report non-message methods"
+    $ote = $um.items | Where-Object { $_.message -eq 'OnTriggerEnter' } | Select-Object -First 1
+    Assert (@($ote.parameter_types) -contains 'TestIL.Collider') "OnTriggerEnter hit carries its parameter type" "got $($ote.parameter_types -join ',')"
+    Assert ($ote.token -gt 0) "message hit carries an MDToken"
+    # Assembly-wide sweep (no type_full_name) still surfaces UnityComponent's messages.
+    $umAll = Rpc 'find_unity_messages' @{ assembly_name='TestIL'; page_size=200 }
+    Assert (@($umAll.items | Where-Object { $_.type -eq 'TestIL.UnityComponent' -and $_.message -eq 'Update' }).Count -ge 1) "assembly-wide sweep finds UnityComponent.Update" "total=$($umAll.total_count)"
 }
 finally
 {

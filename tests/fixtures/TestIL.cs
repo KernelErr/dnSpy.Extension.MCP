@@ -90,6 +90,20 @@ namespace TestIL
     public class Enemy : BaseEntity { public override int Attack() => 50; }
     public class Boss : Enemy { public override int Attack() => 500; }
 
+    // find_unity_messages coverage: methods named like Unity engine messages. No real UnityEngine
+    // reference here (the fixture is netstandard2.0), but the tool matches by NAME — which is exactly
+    // how Unity dispatches them — so a fake Collider param still exercises parameter reporting.
+    public class UnityComponent
+    {
+        public int health;
+        private void Awake() { health = 100; }
+        private void Update() { health--; }
+        private void OnTriggerEnter(Collider other) { health -= 10; }
+        public void NotAMessage() { health = 0; }   // must NOT be reported
+    }
+
+    public class Collider { }
+
     // search_constants coverage: distinctive int / long / double literals. 1337 appears in two
     // methods (AddMagic uses a runtime arg so the compiler can't constant-fold it away).
     public static class Numbers

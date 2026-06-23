@@ -467,6 +467,32 @@ namespace dnSpy.Extension.MCP
                     }
                 },
                 new ToolInfo {
+                    Name = "find_unity_messages",
+                    Description = "List the Unity lifecycle / message methods (Awake / Start / Update / FixedUpdate / OnEnable / OnTriggerEnter / OnCollisionEnter / OnGUI / OnDestroy / …) declared on a type, or across a whole assembly. Unity invokes these by name via reflection, so they have NO IL call site — find_callers / find_references can't surface them, yet they're the entry points you hook in a MonoBehaviour. Pass type_full_name for one type, or omit it to sweep the assembly (e.g. 'which classes have an Update()?'). Each hit returns type, message (method name), parameter_types (so you see e.g. OnTriggerEnter(UnityEngine.Collider)), signature, MDToken, is_static — feed token into generate_harmony_patch / decompile_by_token. These only actually fire on MonoBehaviour subclasses. Paginated (default page size 10).",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Name of the assembly (e.g. 'Assembly-CSharp')"
+                            },
+                            ["type_full_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional. A single type to inspect. Omit to sweep every type in the assembly."
+                            },
+                            ["page_size"] = new Dictionary<string, object> {
+                                ["type"] = "integer",
+                                ["description"] = "Optional page size for the first request (default 10, max 1000)."
+                            },
+                            ["cursor"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional cursor for pagination (opaque token from previous response)."
+                            }
+                        },
+                        ["required"] = new List<string> { "assembly_name" }
+                    }
+                },
+                new ToolInfo {
                     Name = "search_string_literals",
                     Description = "Reverse-lookup: find every method that emits a given string literal (ldstr) across loaded assemblies. Answers \"which method uses this string?\" — the #1 question in game/Unity RE where logic is wired by string keys (PlayerPrefs keys, scene names, save tokens). Query is a case-insensitive substring by default; use * for wildcards anchored to the whole string (e.g. 'SAVE*'). Optionally restrict to one assembly. Each hit returns the string value, declaring type, method name + MDToken (uint), full signature, and IL index/offset. Paginated (default page size 10).",
                     InputSchema = new Dictionary<string, object> {
@@ -950,6 +976,7 @@ namespace dnSpy.Extension.MCP
                         "search_constants" => SearchConstants(arguments),
                         "generate_bepinex_plugin" => GenerateBepInExPlugin(arguments),
                         "generate_harmony_patch" => GenerateHarmonyPatch(arguments),
+                        "find_unity_messages" => FindUnityMessages(arguments),
                         "get_type_fields" => GetTypeFields(arguments),
                         "get_type_property" => GetTypeProperty(arguments),
                         "find_path_to_type" => FindPathToType(arguments),
@@ -2129,6 +2156,93 @@ namespace dnSpy.Extension.MCP
             var s = fullName!.Replace('/', '.');
             var tick = s.IndexOf('`');
             return tick >= 0 ? s.Substring(0, tick) : s;
+        }
+
+        // The well-known Unity "message" methods MonoBehaviour (and a few ScriptableObject/editor)
+        // subclasses can declare — the engine invokes them by name via reflection, so there is no IL
+        // call site for find_callers to follow. Curated from Unity's MonoBehaviour message list.
+        static readonly HashSet<string> UnityMessageNames = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "Awake", "OnEnable", "Reset", "Start", "FixedUpdate", "Update", "LateUpdate", "OnGUI",
+            "OnDisable", "OnDestroy", "OnApplicationQuit", "OnApplicationPause", "OnApplicationFocus",
+            "OnBecameVisible", "OnBecameInvisible", "OnPreCull", "OnPreRender", "OnPostRender",
+            "OnRenderObject", "OnWillRenderObject", "OnRenderImage", "OnDrawGizmos", "OnDrawGizmosSelected",
+            "OnValidate", "OnAnimatorMove", "OnAnimatorIK", "OnAudioFilterRead",
+            "OnCollisionEnter", "OnCollisionStay", "OnCollisionExit",
+            "OnCollisionEnter2D", "OnCollisionStay2D", "OnCollisionExit2D",
+            "OnTriggerEnter", "OnTriggerStay", "OnTriggerExit",
+            "OnTriggerEnter2D", "OnTriggerStay2D", "OnTriggerExit2D",
+            "OnControllerColliderHit", "OnJointBreak", "OnJointBreak2D",
+            "OnParticleCollision", "OnParticleTrigger", "OnParticleSystemStopped",
+            "OnMouseDown", "OnMouseUp", "OnMouseUpAsButton", "OnMouseEnter", "OnMouseExit", "OnMouseOver", "OnMouseDrag",
+            "OnTransformChildrenChanged", "OnTransformParentChanged", "OnBeforeTransformParentChanged",
+            "OnRectTransformDimensionsChange", "OnCanvasGroupChanged", "OnCanvasHierarchyChanged",
+            "OnServerInitialized", "OnConnectedToServer", "OnDisconnectedFromServer", "OnPlayerConnected",
+            "OnPlayerDisconnected", "OnNetworkInstantiate", "OnSerializeNetworkView", "OnLevelWasLoaded",
+        };
+
+        /// <summary>
+        /// Lists the Unity lifecycle / message methods (Awake / Update / OnTriggerEnter / OnGUI / …)
+        /// declared on a type, or across a whole assembly. These are engine-invoked by name, so they
+        /// have no IL call site — find_callers / find_references can't surface them, yet they're the
+        /// first thing you need when deciding where to hook a MonoBehaviour. Each hit carries the
+        /// method's parameters so you can see e.g. OnTriggerEnter(Collider) at a glance, and the
+        /// MDToken so it feeds straight into generate_harmony_patch / decompile_by_token.
+        /// </summary>
+        CallToolResult FindUnityMessages(Dictionary<string, object>? arguments)
+        {
+            if (arguments == null)
+                throw new ArgumentException("Arguments required");
+            if (!arguments.TryGetValue("assembly_name", out var assemblyNameObj))
+                throw new ArgumentException("assembly_name is required");
+            var assemblyName = assemblyNameObj.ToString() ?? string.Empty;
+            var typeFullName = ReadOptionalString(arguments, "type_full_name");
+
+            string? cursor = null;
+            if (arguments.TryGetValue("cursor", out var cursorObj))
+                cursor = cursorObj?.ToString();
+            var (offset, pageSize) = ResolvePageSize(cursor, arguments);
+
+            var assembly = FindAssemblyByName(assemblyName);
+            if (assembly == null)
+                throw new ArgumentException($"Assembly not found: {assemblyName}");
+
+            IEnumerable<TypeDef> types;
+            if (typeFullName != null)
+            {
+                var type = FindTypeInAssembly(assembly, typeFullName);
+                if (type == null)
+                    throw new ArgumentException($"Type not found: {typeFullName}");
+                types = new[] { type };
+            }
+            else
+            {
+                types = assembly.Modules.SelectMany(m => m.GetTypes());
+            }
+
+            var results = new List<object>();
+            foreach (var type in types)
+            {
+                foreach (var method in type.Methods)
+                {
+                    if (!UnityMessageNames.Contains(method.Name.String))
+                        continue;
+                    var pars = method.Parameters.Where(p => p.IsNormalMethodParameter)
+                        .Select(p => p.Type?.FullName ?? "?").ToList();
+                    results.Add(new
+                    {
+                        assembly = type.Module?.Assembly?.Name.String ?? assemblyName,
+                        type = type.FullName,
+                        message = method.Name.String,
+                        signature = method.FullName,
+                        token = method.MDToken.Raw,
+                        parameter_types = pars,
+                        is_static = method.IsStatic,
+                    });
+                }
+            }
+
+            return CreatePaginatedResponse(results, offset, pageSize);
         }
 
         CallToolResult GetTypeFields(Dictionary<string, object>? arguments)

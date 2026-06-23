@@ -23,7 +23,7 @@ From zero to "ask Claude about your assembly" in a few minutes:
 
 ## Features
 
-### MCP Tools (29 total)
+### MCP Tools (30 total)
 
 #### Loading
 
@@ -51,6 +51,7 @@ From zero to "ask Claude about your assembly" in a few minutes:
 2. **find_callees** — the inverse: what a single method *uses* (methods it calls, fields it reads/writes, types it touches), deduplicated per referenced member with opcodes + site count and a resolved `MDToken` (dnSpy Analyze's "Uses")
 3. **find_references** — every IL site referencing a `method` / `field` / `type` / `string` (`target_kind` selects), across all assemblies
 4. **find_overrides** — virtual / interface-method polymorphism (dnSpy Analyze's "Overridden By" / "Overrides"): `direction='overridden_by'` lists every type that overrides a class virtual **or implements an interface method** (implicit + explicit; `is_interface_impl` flags the latter) — the concrete bodies a `callvirt` can dispatch to, which `find_callers` can't surface; `direction='overrides'` walks the base chain for what a method overrides
+5. **find_unity_messages** — list the Unity lifecycle / message methods (`Awake` / `Update` / `OnTriggerEnter` / `OnGUI` / …) on a type, or across an assembly. Unity invokes these by name with no IL call site, so xref can't find them — yet they're the entry points you hook in a MonoBehaviour. Each hit carries `parameter_types` + `MDToken`
 
 #### Strings & constants
 

@@ -23,7 +23,7 @@ English: see [README.md](README.md).
 
 ## 功能
 
-### MCP 工具（共 29 个）
+### MCP 工具（共 30 个）
 
 #### 加载
 
@@ -51,6 +51,7 @@ English: see [README.md](README.md).
 2. **find_callees** — 反方向：某个方法"用了谁"（它调用的方法、读写的字段、引用的类型），按被引用成员去重，每条带 opcode 集合 + 出现次数 + 已解析的 `MDToken`（对应 dnSpy Analyze 的 "Uses"）
 3. **find_references** — 跨所有程序集查找引用某 `method` / `field` / `type` / `string` 的所有 IL 位置（由 `target_kind` 选择目标种类）
 4. **find_overrides** — 虚方法/接口方法多态（对应 dnSpy Analyze 的 "Overridden By" / "Overrides"）：`direction='overridden_by'` 列出所有重写某类虚方法、**或实现某接口方法**的类型（隐式 + 显式实现，后者用 `is_interface_impl` 标记）——即 `callvirt` 真正可能分发到的具体实现，这是 `find_callers` 给不出的；`direction='overrides'` 沿基类链向上找该方法重写了谁
+5. **find_unity_messages** — 列出某类型（或整个程序集）的 Unity 生命周期/消息方法（`Awake` / `Update` / `OnTriggerEnter` / `OnGUI` / …）。Unity 按名字反射调用它们、IL 里没有调用点，所以 xref 找不到——但它们正是你在 MonoBehaviour 里要 hook 的入口。每条命中带 `parameter_types` + `MDToken`
 
 #### 字符串与常量
 
