@@ -71,7 +71,7 @@ English: see [README.md](README.md).
 
 #### 代码生成
 
-1. **generate_bepinex_plugin** — 生成带 Harmony 钩子的 BepInEx 插件模板
+1. **generate_bepinex_plugin** — 生成完整 BepInEx 插件：`BaseUnityPlugin` 外壳（Awake 里 `Harmony.PatchAll`、OnDestroy 取消补丁）+ 每个 hook 一个 `[HarmonyPatch]` 类。每个 hook 都按目标程序集里的真实方法解析，所以补丁是**签名感知**的（真实 `__instance` / `ref __result` / 具名参数），而非空桩；解析不到的 hook 降级为注释。支持每个 hook 的 `patch_type`（postfix/prefix/transpiler）
 2. **generate_harmony_patch** — 针对**真实方法**生成可直接编译的 HarmonyX 补丁类，按其实际签名注入正确参数：postfix 带 `ref <返回类型> __result`、实例方法带 `__instance`、原方法参数按名注入、方法名重载时补 `new Type[]{...}` 消歧。`patch_type` = postfix / prefix（返回 bool 可跳过原方法）/ transpiler
 
 ### MCP 资源（共 6 个）

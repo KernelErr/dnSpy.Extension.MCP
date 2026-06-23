@@ -695,6 +695,31 @@ try
     $faErr = $null
     try { Rpc 'find_by_attribute' @{ attribute_name='Mark'; targets=@('parameter') } | Out-Null } catch { $faErr = $_.Exception.Message }
     Assert ($faErr -and ($faErr -match 'unknown target')) "invalid target errors with guidance" "got: $faErr"
+
+    # ----- step 30: generate_bepinex_plugin (signature-aware hooks via BuildHarmonyPatchClass) -----
+    Write-Host ""
+    Write-Host "[30] generate_bepinex_plugin: full plugin with real-signature hooks"
+    $plugin = RpcText 'generate_bepinex_plugin' @{
+        plugin_name='MyMod'; plugin_guid='com.example.mymod'; target_assembly='TestIL'
+        hooks=@(
+            @{ type_name='TestIL.Simple'; method_name='AddOne' },
+            @{ type_name='TestIL.Nonexistent'; method_name='Foo' }
+        )
+    }
+    Assert ($plugin -match 'class MyModPlugin : BaseUnityPlugin') "plugin shell generated"
+    Assert ($plugin -match 'harmony\.PatchAll\(\)') "Awake wires Harmony.PatchAll"
+    Assert ($plugin -match '\[HarmonyPatch\(typeof\(TestIL\.Simple\), "AddOne"\)\]') "resolved hook emits HarmonyPatch attribute"
+    # The key upgrade: AddOne(int) -> postfix carries ref int __result + the real param name, not an empty stub.
+    Assert ($plugin -match 'ref int __result') "resolved hook is signature-aware (ref int __result, not an empty stub)" "src:`n$plugin"
+    # Unresolved hook degrades to a comment, doesn't break generation.
+    Assert ($plugin -match 'Type not found in TestIL: TestIL\.Nonexistent') "unresolved hook degrades to a comment"
+
+    # prefix patch_type per hook is honored.
+    $plugin2 = RpcText 'generate_bepinex_plugin' @{
+        plugin_name='M2'; plugin_guid='g2'; target_assembly='TestIL'
+        hooks=@(@{ type_name='TestIL.Patchable'; method_name='IsPremium'; patch_type='prefix' })
+    }
+    Assert ($plugin2 -match 'static bool Prefix\(') "per-hook patch_type=prefix honored"
 }
 finally
 {

@@ -71,7 +71,7 @@ From zero to "ask Claude about your assembly" in a few minutes:
 
 #### Codegen
 
-1. **generate_bepinex_plugin** — BepInEx plugin template with Harmony hooks
+1. **generate_bepinex_plugin** — a full BepInEx plugin: the `BaseUnityPlugin` shell (Awake wiring `Harmony.PatchAll`, OnDestroy unpatch) plus a `[HarmonyPatch]` class per hook. Each hook is resolved against the target assembly so its patch is **signature-aware** (real `__instance` / `ref __result` / named params), not an empty stub; unresolved hooks degrade to a comment. Per-hook `patch_type` (postfix/prefix/transpiler)
 2. **generate_harmony_patch** — a compile-ready HarmonyX patch class for a *real* method, with the right injected params read from its actual signature: `ref <ReturnType> __result` for a postfix, `__instance` for instance methods, the original parameters by name, and a `new Type[]{...}` disambiguator when the name is overloaded. `patch_type` = postfix / prefix (returns bool to skip the original) / transpiler
 
 ### MCP Resources (6 total)

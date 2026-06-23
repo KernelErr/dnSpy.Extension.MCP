@@ -603,7 +603,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "generate_bepinex_plugin",
-                    Description = "Generate a BepInEx plugin template with hooks for specified methods",
+                    Description = "Generate a complete BepInEx plugin: the BaseUnityPlugin shell (Awake wiring Harmony.PatchAll, OnDestroy unpatch) plus a [HarmonyPatch] class per hook. Each hook is resolved against target_assembly so its patch carries the method's REAL signature (__instance, ref <ret> __result, original params by name) — the same signature-aware output as generate_harmony_patch, not an empty stub. An unresolved/overloaded hook degrades to a commented stub (pin it with generate_harmony_patch). For a single patch, prefer generate_harmony_patch; use this to scaffold the whole plugin at once.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -617,16 +617,17 @@ namespace dnSpy.Extension.MCP
                             },
                             ["target_assembly"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Target assembly name"
+                                ["description"] = "Assembly whose methods the hooks target (must be loaded so signatures can be read), e.g. 'Assembly-CSharp'"
                             },
                             ["hooks"] = new Dictionary<string, object> {
                                 ["type"] = "array",
-                                ["description"] = "Array of methods to hook",
+                                ["description"] = "Array of methods to hook. Each patch is generated from the resolved method's signature.",
                                 ["items"] = new Dictionary<string, object> {
                                     ["type"] = "object",
                                     ["properties"] = new Dictionary<string, object> {
-                                        ["type_name"] = new Dictionary<string, object> { ["type"] = "string" },
-                                        ["method_name"] = new Dictionary<string, object> { ["type"] = "string" }
+                                        ["type_name"] = new Dictionary<string, object> { ["type"] = "string", ["description"] = "Full name of the declaring type" },
+                                        ["method_name"] = new Dictionary<string, object> { ["type"] = "string", ["description"] = "Method to hook" },
+                                        ["patch_type"] = new Dictionary<string, object> { ["type"] = "string", ["description"] = "postfix (default) / prefix / transpiler" }
                                     }
                                 }
                             }
@@ -1913,7 +1914,10 @@ namespace dnSpy.Extension.MCP
             sb.AppendLine("        }");
             sb.AppendLine("    }");
 
-            // Add hooks if provided
+            // Add hooks if provided. Each hook is resolved against target_assembly so the generated
+            // patch carries the method's REAL signature (__instance / ref __result / named params) via
+            // the shared BuildHarmonyPatchClass — the same code generate_harmony_patch emits. An
+            // unresolved hook degrades to a commented stub instead of failing the whole plugin.
             if (arguments.TryGetValue("hooks", out var hooksObj) && hooksObj is JsonElement hooksElement)
             {
                 try
@@ -1921,25 +1925,51 @@ namespace dnSpy.Extension.MCP
                     var hooks = JsonSerializer.Deserialize<List<Dictionary<string, string>>>(hooksElement.ToString());
                     if (hooks != null && hooks.Count > 0)
                     {
-                        sb.AppendLine();
+                        var hookAssembly = FindAssemblyByName(targetAssembly);
                         foreach (var hook in hooks)
                         {
-                            if (hook.TryGetValue("type_name", out var typeName) &&
-                                hook.TryGetValue("method_name", out var methodName))
+                            if (!hook.TryGetValue("type_name", out var typeName) ||
+                                !hook.TryGetValue("method_name", out var methodName))
+                                continue;
+                            hook.TryGetValue("patch_type", out var hookPatchType);
+                            var patchType = string.IsNullOrWhiteSpace(hookPatchType) ? "postfix" : hookPatchType!.Trim().ToLowerInvariant();
+                            if (patchType != "postfix" && patchType != "prefix" && patchType != "transpiler")
+                                patchType = "postfix";
+
+                            sb.AppendLine();
+                            MethodDef? hookMethod = null;
+                            if (hookAssembly != null)
                             {
-                                sb.AppendLine();
+                                var hookType = FindTypeInAssembly(hookAssembly, typeName);
+                                if (hookType != null)
+                                {
+                                    try { hookMethod = FindMethod(hookType, methodName, null, null); }
+                                    catch (ArgumentException ex)
+                                    {
+                                        // Overloaded or not found — leave a note; the dev can pin it with generate_harmony_patch.
+                                        sb.AppendLine($"    // Could not uniquely resolve {typeName}::{methodName}: {ex.Message}");
+                                        sb.AppendLine($"    // Use generate_harmony_patch with parameter_types/method_token for an exact patch.");
+                                    }
+                                }
+                                else
+                                    sb.AppendLine($"    // Type not found in {targetAssembly}: {typeName}");
+                            }
+                            else
+                                sb.AppendLine($"    // Assembly not loaded: {targetAssembly} — emitting a name-only stub.");
+
+                            if (hookMethod != null)
+                            {
+                                // Indent the shared patch class to sit inside the namespace block.
+                                foreach (var line in BuildHarmonyPatchClass(hookMethod, patchType).TrimEnd('\n', '\r').Split('\n'))
+                                    sb.AppendLine(line.Length == 0 ? string.Empty : "    " + line.TrimEnd('\r'));
+                            }
+                            else
+                            {
+                                // Fallback stub (unresolved): keep the old shape so the plugin still compiles structurally.
                                 sb.AppendLine($"    [HarmonyPatch(typeof({typeName}), \"{methodName}\")]");
-                                sb.AppendLine($"    class {typeName.Replace(".", "_")}_{methodName}_Patch");
+                                sb.AppendLine($"    internal static class {typeName.Replace(".", "_").Replace("+", "_").Replace("/", "_")}_{methodName}_Patch");
                                 sb.AppendLine("    {");
-                                sb.AppendLine("        static void Prefix()");
-                                sb.AppendLine("        {");
-                                sb.AppendLine($"            // Add your code before {methodName} executes");
-                                sb.AppendLine("        }");
-                                sb.AppendLine();
-                                sb.AppendLine("        static void Postfix()");
-                                sb.AppendLine("        {");
-                                sb.AppendLine($"            // Add your code after {methodName} executes");
-                                sb.AppendLine("        }");
+                                sb.AppendLine("        static void Postfix() { /* fill in — could not read the signature */ }");
                                 sb.AppendLine("    }");
                             }
                         }
