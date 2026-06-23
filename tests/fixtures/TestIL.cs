@@ -104,6 +104,20 @@ namespace TestIL
 
     public class Collider { }
 
+    // find_by_attribute coverage: a custom marker (stands in for [SerializeField]) on a field,
+    // plus [Obsolete] on the type and on a method. NOTE: [Serializable] is deliberately NOT used —
+    // it compiles to a TypeAttributes flag, not a CustomAttribute, so it wouldn't be findable.
+    [System.AttributeUsage(System.AttributeTargets.All)]
+    public sealed class MarkAttribute : System.Attribute { }
+
+    [System.Obsolete]
+    public class Decorated
+    {
+        [Mark] public int markedField;
+        [System.Obsolete] public void OldMethod() { }
+        public int PlainField;
+    }
+
     // search_constants coverage: distinctive int / long / double literals. 1337 appears in two
     // methods (AddMagic uses a runtime arg so the compiler can't constant-fold it away).
     public static class Numbers

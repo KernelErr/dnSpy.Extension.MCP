@@ -673,6 +673,28 @@ try
     # Assembly-wide sweep (no type_full_name) still surfaces UnityComponent's messages.
     $umAll = Rpc 'find_unity_messages' @{ assembly_name='TestIL'; page_size=200 }
     Assert (@($umAll.items | Where-Object { $_.type -eq 'TestIL.UnityComponent' -and $_.message -eq 'Update' }).Count -ge 1) "assembly-wide sweep finds UnityComponent.Update" "total=$($umAll.total_count)"
+
+    # ----- step 29: find_by_attribute (locate by convention) -----
+    Write-Host ""
+    Write-Host "[29] find_by_attribute on TestIL"
+    # Custom marker on a field (stands in for [SerializeField]).
+    $fa1 = Rpc 'find_by_attribute' @{ attribute_name='Mark'; assembly_name='TestIL'; page_size=200 }
+    $markHit = $fa1.items | Where-Object { $_.name -eq 'markedField' -and $_.target_kind -eq 'field' } | Select-Object -First 1
+    Assert ($markHit -ne $null -and $markHit.attribute -match 'MarkAttribute') "finds [Mark] on markedField, reports attribute FullName" "got: $($markHit | ConvertTo-Json -Compress)"
+    Assert ($markHit.token -gt 0 -and $markHit.declaring_type -eq 'TestIL.Decorated') "attribute hit carries token + declaring_type"
+    # Type-level attribute (suffix-tolerant: query 'Obsolete' matches System.ObsoleteAttribute).
+    $fa2 = Rpc 'find_by_attribute' @{ attribute_name='Obsolete'; assembly_name='TestIL'; targets=@('type'); page_size=200 }
+    Assert (@($fa2.items | Where-Object { $_.name -eq 'Decorated' -and $_.target_kind -eq 'type' }).Count -eq 1) "finds [Obsolete] type Decorated (suffix-tolerant)"
+    # [Obsolete] on a method.
+    $fa3 = Rpc 'find_by_attribute' @{ attribute_name='Obsolete'; assembly_name='TestIL'; targets=@('method'); page_size=200 }
+    Assert (@($fa3.items | Where-Object { $_.name -eq 'OldMethod' }).Count -ge 1) "finds [Obsolete] method OldMethod"
+    # targets filter: Mark is on a field, so restricting to type yields nothing.
+    $fa4 = Rpc 'find_by_attribute' @{ attribute_name='Mark'; assembly_name='TestIL'; targets=@('type') }
+    Assert (@($fa4.items).Count -eq 0) "targets=[type] excludes the field-level [Mark]" "got $(@($fa4.items).Count)"
+    # invalid target errors.
+    $faErr = $null
+    try { Rpc 'find_by_attribute' @{ attribute_name='Mark'; targets=@('parameter') } | Out-Null } catch { $faErr = $_.Exception.Message }
+    Assert ($faErr -and ($faErr -match 'unknown target')) "invalid target errors with guidance" "got: $faErr"
 }
 finally
 {

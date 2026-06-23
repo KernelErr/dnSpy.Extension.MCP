@@ -493,6 +493,37 @@ namespace dnSpy.Extension.MCP
                     }
                 },
                 new ToolInfo {
+                    Name = "find_by_attribute",
+                    Description = "Find types and/or members decorated with a given custom attribute, across all assemblies (or one). The 'locate by convention' tool: '[SerializeField]' fields (Unity-serialized private state), '[BepInPlugin]' classes (plugin entry points), '[Serializable]' types, '[CompilerGenerated]' members, etc. attribute_name is a case-insensitive substring (or '*' wildcard) matched against the attribute type's short name and FullName, so 'SerializeField' / 'BepInPlugin' / 'Serializable' all work without the 'Attribute' suffix. 'targets' restricts which declaration kinds to scan (type/method/field/property/event; default all). Each hit returns target_kind, declaring_type, name, signature, MDToken, and the matched attribute's FullName. Note: a few 'pseudo' attributes ([Serializable], [NonSerialized], [DllImport], [StructLayout]) compile to metadata flags rather than real custom attributes and are therefore NOT findable here. Paginated (default page size 10).",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["attribute_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Attribute to match (case-insensitive substring or '*' wildcard), e.g. 'SerializeField', 'BepInPlugin', 'Serializable'. The 'Attribute' suffix is optional."
+                            },
+                            ["targets"] = new Dictionary<string, object> {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object> { ["type"] = "string" },
+                                ["description"] = "Optional. Which declaration kinds to scan — any of: type, method, field, property, event. Omit for all."
+                            },
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional. Restrict to a single assembly. Omit to sweep all loaded assemblies."
+                            },
+                            ["page_size"] = new Dictionary<string, object> {
+                                ["type"] = "integer",
+                                ["description"] = "Optional page size for the first request (default 10, max 1000)."
+                            },
+                            ["cursor"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional cursor for pagination (opaque token from previous response)."
+                            }
+                        },
+                        ["required"] = new List<string> { "attribute_name" }
+                    }
+                },
+                new ToolInfo {
                     Name = "search_string_literals",
                     Description = "Reverse-lookup: find every method that emits a given string literal (ldstr) across loaded assemblies. Answers \"which method uses this string?\" — the #1 question in game/Unity RE where logic is wired by string keys (PlayerPrefs keys, scene names, save tokens). Query is a case-insensitive substring by default; use * for wildcards anchored to the whole string (e.g. 'SAVE*'). Optionally restrict to one assembly. Each hit returns the string value, declaring type, method name + MDToken (uint), full signature, and IL index/offset. Paginated (default page size 10).",
                     InputSchema = new Dictionary<string, object> {
@@ -977,6 +1008,7 @@ namespace dnSpy.Extension.MCP
                         "generate_bepinex_plugin" => GenerateBepInExPlugin(arguments),
                         "generate_harmony_patch" => GenerateHarmonyPatch(arguments),
                         "find_unity_messages" => FindUnityMessages(arguments),
+                        "find_by_attribute" => FindByAttribute(arguments),
                         "get_type_fields" => GetTypeFields(arguments),
                         "get_type_property" => GetTypeProperty(arguments),
                         "find_path_to_type" => FindPathToType(arguments),
@@ -2243,6 +2275,127 @@ namespace dnSpy.Extension.MCP
             }
 
             return CreatePaginatedResponse(results, offset, pageSize);
+        }
+
+        static readonly HashSet<string> AttributeTargetKinds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "type", "method", "field", "property", "event",
+        };
+
+        /// <summary>
+        /// Finds types and/or members decorated with a given custom attribute (e.g. [SerializeField],
+        /// [BepInPlugin], [Serializable], [CompilerGenerated]) across loaded assemblies. Attribute
+        /// matching is a case-insensitive substring (or '*' wildcard) against the attribute type's
+        /// short Name and FullName, so 'SerializeField', 'BepInPlugin', 'Serializable' all just work.
+        /// Reflection over metadata only — useful for the "locate by convention" half of Unity/BepInEx
+        /// RE (serialized fields, plugin entry points) that name search alone can't express.
+        /// </summary>
+        CallToolResult FindByAttribute(Dictionary<string, object>? arguments)
+        {
+            if (arguments == null || !arguments.TryGetValue("attribute_name", out var attrObj) || attrObj == null)
+                throw new ArgumentException("attribute_name is required (e.g. 'SerializeField', 'BepInPlugin')");
+            var attrQuery = attrObj.ToString() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(attrQuery))
+                throw new ArgumentException("attribute_name must not be empty");
+            var matches = BuildStringMatcher(attrQuery);
+
+            var kindsRaw = ReadStringArray(arguments, "targets");
+            HashSet<string> kinds;
+            if (kindsRaw == null || kindsRaw.Count == 0)
+                kinds = AttributeTargetKinds;
+            else
+            {
+                kinds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var k in kindsRaw)
+                {
+                    var kk = (k ?? string.Empty).Trim();
+                    if (!AttributeTargetKinds.Contains(kk))
+                        throw new ArgumentException($"unknown target '{k}' (expected any of: type, method, field, property, event)");
+                    kinds.Add(kk);
+                }
+            }
+
+            var assemblyName = ReadOptionalString(arguments, "assembly_name");
+            string? cursor = null;
+            if (arguments.TryGetValue("cursor", out var cursorObj))
+                cursor = cursorObj?.ToString();
+            var (offset, pageSize) = ResolvePageSize(cursor, arguments);
+
+            IEnumerable<TypeDef> typeUniverse;
+            if (assemblyName != null)
+            {
+                var assembly = FindAssemblyByName(assemblyName);
+                if (assembly == null)
+                    throw new ArgumentException($"Assembly not found: {assemblyName}");
+                typeUniverse = assembly.Modules.SelectMany(m => m.GetTypes());
+            }
+            else
+            {
+                typeUniverse = documentTreeView.GetAllModuleNodes()
+                    .SelectMany(m => m.Document?.ModuleDef?.GetTypes() ?? Enumerable.Empty<TypeDef>());
+            }
+
+            bool wantType = kinds.Contains("type");
+            bool wantMethod = kinds.Contains("method");
+            bool wantField = kinds.Contains("field");
+            bool wantProperty = kinds.Contains("property");
+            bool wantEvent = kinds.Contains("event");
+
+            var results = new List<object>();
+            foreach (var type in typeUniverse)
+            {
+                var asm = type.Module?.Assembly?.Name.String ?? "Unknown";
+                if (wantType)
+                {
+                    var m = MatchedAttribute(type.CustomAttributes, matches);
+                    if (m != null)
+                        results.Add(new { assembly = asm, target_kind = "type", declaring_type = type.FullName, name = type.Name.String, signature = type.FullName, token = type.MDToken.Raw, attribute = m });
+                }
+                if (wantMethod)
+                    foreach (var x in type.Methods)
+                    {
+                        var m = MatchedAttribute(x.CustomAttributes, matches);
+                        if (m != null)
+                            results.Add(new { assembly = asm, target_kind = "method", declaring_type = type.FullName, name = x.Name.String, signature = x.FullName, token = x.MDToken.Raw, attribute = m });
+                    }
+                if (wantField)
+                    foreach (var x in type.Fields)
+                    {
+                        var m = MatchedAttribute(x.CustomAttributes, matches);
+                        if (m != null)
+                            results.Add(new { assembly = asm, target_kind = "field", declaring_type = type.FullName, name = x.Name.String, signature = x.FullName, token = x.MDToken.Raw, attribute = m });
+                    }
+                if (wantProperty)
+                    foreach (var x in type.Properties)
+                    {
+                        var m = MatchedAttribute(x.CustomAttributes, matches);
+                        if (m != null)
+                            results.Add(new { assembly = asm, target_kind = "property", declaring_type = type.FullName, name = x.Name.String, signature = x.FullName, token = x.MDToken.Raw, attribute = m });
+                    }
+                if (wantEvent)
+                    foreach (var x in type.Events)
+                    {
+                        var m = MatchedAttribute(x.CustomAttributes, matches);
+                        if (m != null)
+                            results.Add(new { assembly = asm, target_kind = "event", declaring_type = type.FullName, name = x.Name.String, signature = x.FullName, token = x.MDToken.Raw, attribute = m });
+                    }
+            }
+
+            return CreatePaginatedResponse(results, offset, pageSize);
+        }
+
+        // Returns the FullName of the first custom attribute whose type name matches, else null.
+        static string? MatchedAttribute(IEnumerable<CustomAttribute> attrs, Func<string, bool> matches)
+        {
+            foreach (var ca in attrs)
+            {
+                var at = ca.AttributeType;
+                if (at == null)
+                    continue;
+                if (matches(at.Name?.String ?? string.Empty) || matches(at.FullName ?? string.Empty))
+                    return at.FullName;
+            }
+            return null;
         }
 
         CallToolResult GetTypeFields(Dictionary<string, object>? arguments)
