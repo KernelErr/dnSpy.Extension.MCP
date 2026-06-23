@@ -592,6 +592,11 @@ try
     # a value that isn't present yields nothing.
     $sc4 = Rpc 'search_constants' @{ value=424242; assembly_name='TestIL' }
     Assert (@($sc4.items).Count -eq 0) "absent constant 424242 returns no hits" "got $(@($sc4.items).Count)"
+    # Whole-program sweep (no assembly_name): 1337 is a distinctive value, so the TestIL hits must
+    # still surface when scanning every loaded module — proving the unscoped branch works.
+    $sc5 = Rpc 'search_constants' @{ value=1337 }
+    $sc5testil = @($sc5.items | Where-Object { $_.assembly -eq 'TestIL' -and $_.value -eq 1337 })
+    Assert ($sc5testil.Count -ge 2) "unscoped search_constants still finds TestIL's 1337 sites across all modules" "count=$($sc5testil.Count)"
 
     # ----- step 26: open_files (load assemblies from disk) — runs LAST: it loads extra copies of
     # TestIL, which would add duplicate 'TestIL' entries that earlier single-match lookups don't expect.
@@ -615,6 +620,14 @@ try
     Copy-Item $testDll (Join-Path $openDir 'OpenB.dll') -Force
     $o3 = Rpc 'open_files' @{ paths=@($openDir) }
     Assert ($o3.loaded_count -eq 1 -and $o3.already_loaded_count -eq 1) "directory mode loads new OpenB.dll, skips already-open OpenA.dll" "loaded=$($o3.loaded_count) already=$($o3.already_loaded_count)"
+    # Recursive: a DLL in a subdirectory is skipped by default (top-dir only) but picked up with recursive=true.
+    $subDir = Join-Path $openDir 'nested'
+    New-Item -ItemType Directory -Path $subDir | Out-Null
+    Copy-Item $testDll (Join-Path $subDir 'OpenC.dll') -Force
+    $o3b = Rpc 'open_files' @{ paths=@($openDir) }
+    Assert ($o3b.loaded_count -eq 0) "default (non-recursive) directory mode does not descend into subdirectories" "loaded=$($o3b.loaded_count)"
+    $o3c = Rpc 'open_files' @{ paths=@($openDir); recursive=$true }
+    Assert ($o3c.loaded_count -eq 1) "recursive=true loads the DLL in the nested subdirectory" "loaded=$($o3c.loaded_count) already=$($o3c.already_loaded_count)"
     # A missing path is reported in failed[], not thrown as a tool error.
     $o4 = Rpc 'open_files' @{ paths=@('C:\does\not\exist\nope.dll') }
     Assert ($o4.failed_count -eq 1 -and $o4.loaded_count -eq 0) "missing file reported in failed[] (not a hard error)" "failed=$($o4.failed_count)"
