@@ -1883,11 +1883,34 @@ namespace dnSpy.Extension.MCP
             var pluginGuid = pluginGuidObj.ToString() ?? string.Empty;
             var targetAssembly = targetAssemblyObj.ToString() ?? string.Empty;
 
+            // A transpiler hook references IEnumerable<CodeInstruction> / CodeInstruction, which need
+            // extra usings; detect that up front so the header is complete (the standalone
+            // generate_harmony_patch adds the same two for transpilers).
+            bool anyTranspiler = false;
+            if (arguments.TryGetValue("hooks", out var hooksPeek) && hooksPeek is JsonElement hp && hp.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var h in hp.EnumerateArray())
+                {
+                    if (h.ValueKind == JsonValueKind.Object && h.TryGetProperty("patch_type", out var pt) &&
+                        pt.ValueKind == JsonValueKind.String &&
+                        string.Equals(pt.GetString(), "transpiler", StringComparison.OrdinalIgnoreCase))
+                    {
+                        anyTranspiler = true;
+                        break;
+                    }
+                }
+            }
+
             var sb = new StringBuilder();
             sb.AppendLine("using BepInEx;");
             sb.AppendLine("using BepInEx.Logging;");
             sb.AppendLine("using HarmonyLib;");
             sb.AppendLine("using System;");
+            if (anyTranspiler)
+            {
+                sb.AppendLine("using System.Collections.Generic;");
+                sb.AppendLine("using System.Reflection.Emit;");
+            }
             sb.AppendLine();
             sb.AppendLine($"namespace {pluginName}");
             sb.AppendLine("{");
@@ -2081,9 +2104,12 @@ namespace dnSpy.Extension.MCP
             var sb = new StringBuilder();
 
             // ---- [HarmonyPatch(...)] attribute ----
+            // When the name is overloaded we must always emit the Type[] discriminator — including the
+            // parameterless overload (new Type[0]); otherwise Harmony can't tell the overloads apart
+            // and PatchAll() throws "Ambiguous match" at runtime.
             if (isCtor)
                 sb.AppendLine($"[HarmonyPatch(typeof({declCs}), MethodType.Constructor)]");
-            else if (overloaded && paramInfos.Count > 0)
+            else if (overloaded)
             {
                 var typeArr = string.Join(", ", paramInfos.Select(p => p.byRef
                     ? $"typeof({p.type}).MakeByRefType()"
@@ -2195,12 +2221,12 @@ namespace dnSpy.Extension.MCP
                 case ElementType.GenericInst:
                 {
                     var gi = (GenericInstSig)sig;
-                    var genName = CleanGenericTypeName(gi.GenericType?.TypeDefOrRef?.FullName);
+                    var openName = gi.GenericType?.TypeDefOrRef?.FullName;
+                    var argStrs = gi.GenericArguments.Select(CSharpTypeName).ToList();
                     // Nullable<T> reads better as T?.
-                    if (genName == "System.Nullable" && gi.GenericArguments.Count == 1)
-                        return CSharpTypeName(gi.GenericArguments[0]) + "?";
-                    var args = string.Join(", ", gi.GenericArguments.Select(CSharpTypeName));
-                    return $"{genName}<{args}>";
+                    if (CleanGenericTypeName(openName) == "System.Nullable" && argStrs.Count == 1)
+                        return argStrs[0] + "?";
+                    return RenderNestedGeneric(openName, argStrs);
                 }
                 case ElementType.Var:
                 case ElementType.MVar:
@@ -2210,14 +2236,50 @@ namespace dnSpy.Extension.MCP
             }
         }
 
-        // Strips dnlib's `N arity suffix and normalizes nested-type '/' to '.'.
+        // Strips dnlib's `N arity suffix and normalizes nested-type '/' to '.'. The arity suffix must
+        // be stripped per dotted segment, not globally: a nested type of a generic renders as
+        // "Outer`2/Inner", and a global cut at the first backtick would drop ".Inner" entirely.
         static string CleanGenericTypeName(string? fullName)
         {
             if (string.IsNullOrEmpty(fullName))
                 return "object";
-            var s = fullName!.Replace('/', '.');
-            var tick = s.IndexOf('`');
-            return tick >= 0 ? s.Substring(0, tick) : s;
+            var segments = fullName!.Replace('/', '.').Split('.');
+            for (int i = 0; i < segments.Length; i++)
+            {
+                var tick = segments[i].IndexOf('`');
+                if (tick >= 0)
+                    segments[i] = segments[i].Substring(0, tick);
+            }
+            return string.Join(".", segments);
+        }
+
+        // Renders a generic instantiation as compilable C#, distributing the flat GenericArguments
+        // list across the open type's dotted segments by each segment's own arity (the `N suffix).
+        // So Dictionary`2/Enumerator with [int,string] → "Dictionary<int, string>.Enumerator", and
+        // Outer`1/Inner`1 with [A,B] → "Outer<A>.Inner<B>" — not the truncated/misplaced forms.
+        static string RenderNestedGeneric(string? openFullName, IList<string> args)
+        {
+            if (string.IsNullOrEmpty(openFullName))
+                return "object";
+            var segments = openFullName!.Replace('/', '.').Split('.');
+            var parts = new List<string>(segments.Length);
+            int idx = 0;
+            foreach (var seg in segments)
+            {
+                var tick = seg.IndexOf('`');
+                if (tick < 0) { parts.Add(seg); continue; }
+                var name = seg.Substring(0, tick);
+                int arity = int.TryParse(seg.Substring(tick + 1), out var a) ? a : 0;
+                if (arity > 0 && idx < args.Count)
+                {
+                    var take = args.Skip(idx).Take(arity).ToList();
+                    idx += arity;
+                    parts.Add($"{name}<{string.Join(", ", take)}>");
+                }
+                else
+                    parts.Add(name);
+            }
+            return string.Join(".", parts);
         }
 
         // The well-known Unity "message" methods MonoBehaviour (and a few ScriptableObject/editor)

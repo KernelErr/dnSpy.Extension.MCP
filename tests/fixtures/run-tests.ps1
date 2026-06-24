@@ -720,6 +720,47 @@ try
         hooks=@(@{ type_name='TestIL.Patchable'; method_name='IsPremium'; patch_type='prefix' })
     }
     Assert ($plugin2 -match 'static bool Prefix\(') "per-hook patch_type=prefix honored"
+
+    # ----- step 31: review-finding fixes -----
+    Write-Host ""
+    Write-Host "[31] review fixes: enum/uint force_return, nested-generic codegen, overload, uint search"
+    # HIGH-1: long-backed enum force_return must emit ldc.i8 (not ldc.i4 -> invalid IL).
+    $fe = Rpc 'force_return' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='GetBigEnum'; value=9000000000 }
+    $feops = @($fe.instructions | ForEach-Object { $_.opcode })
+    Assert ($feops -contains 'ldc.i8') "long-backed enum force_return emits ldc.i8" "ops=$($feops -join ',')"
+    Rpc 'revert_method_il' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='GetBigEnum' } | Out-Null
+    # HIGH-1/uint: force_return a uint method with a value > int.MaxValue (32-bit bit pattern), verify on disk.
+    Rpc 'force_return' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='GetBigUint'; value=3000000000 } | Out-Null
+    $uintPath = Join-Path $binFixture 'TestIL.uint.dll'
+    if (Test-Path $uintPath) { Remove-Item $uintPath -Force }
+    Rpc 'save_assembly' @{ assembly_name='TestIL'; output_path=$uintPath } | Out-Null
+    $uintVal = & powershell -NoProfile -Command "[Reflection.Assembly]::LoadFile('$uintPath') | Out-Null; [TestIL.Patchable]::GetBigUint()"
+    Assert ($uintVal -eq '3000000000') "force_return uint > int.MaxValue round-trips on disk (3000000000)" "got $uintVal"
+    Rpc 'revert_method_il' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='GetBigUint' } | Out-Null
+    # MED-2: out-of-range int value errors as -32602 (ArgumentException 'does not fit'), not an internal error.
+    $rangeErr = $null
+    try { Rpc 'force_return' @{ assembly_name='TestIL'; type_full_name='TestIL.Numbers'; method_name='Magic'; value=5000000000 } | Out-Null } catch { $rangeErr = $_.Exception.Message }
+    Assert ($rangeErr -and ($rangeErr -match 'does not fit')) "out-of-range int value errors helpfully" "got: $rangeErr"
+
+    # HIGH-2: nested-type-of-a-generic return renders compilably (Dictionary<int, string>.Enumerator).
+    $genPatch = RpcText 'generate_harmony_patch' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='GetEnumerator2' }
+    Assert ($genPatch -match 'Dictionary<int, string>\.Enumerator') "nested generic return rendered as Dictionary<int, string>.Enumerator" "src:`n$genPatch"
+    Assert ($genPatch -notmatch 'Dictionary\.Enumerator<') "generic args are placed on the outer type, not the nested type"
+
+    # HIGH-3: the parameterless overload of an overloaded name gets a Type[] disambiguator.
+    $overPatch = RpcText 'generate_harmony_patch' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='Over'; parameter_types=@() }
+    Assert ($overPatch -match 'new Type\[\] \{  \}|new Type\[\] \{\}') "zero-arg overload still emits an (empty) Type[] disambiguator" "src:`n$overPatch"
+
+    # MED-1: a uint constant > int.MaxValue is findable by search_constants.
+    $uc = Rpc 'search_constants' @{ value=3000000000; assembly_name='TestIL' }
+    Assert (@($uc.items | Where-Object { $_.method -eq 'GetBigUintConst' }).Count -ge 1) "search_constants finds a uint constant > int.MaxValue (3000000000)" "total=$($uc.total_count)"
+
+    # LOW-1: a transpiler hook pulls in the extra usings so the plugin compiles.
+    $tp = RpcText 'generate_bepinex_plugin' @{
+        plugin_name='TMod'; plugin_guid='g.t'; target_assembly='TestIL'
+        hooks=@(@{ type_name='TestIL.Simple'; method_name='AddOne'; patch_type='transpiler' })
+    }
+    Assert (($tp -match 'using System\.Collections\.Generic;') -and ($tp -match 'using System\.Reflection\.Emit;')) "transpiler hook adds the required usings to the plugin header" "src:`n$tp"
 }
 finally
 {

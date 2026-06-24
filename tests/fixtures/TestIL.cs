@@ -126,9 +126,16 @@ namespace TestIL
         public static int AddMagic(int x) => x + 1337;
         public static long Big() => 9000000000L;
         public static double Pi() => 3.14;
+        // A uint constant > int.MaxValue (emitted as ldc.i4 with a negative int32 bit pattern) — must
+        // still be findable by search_constants via its unsigned reinterpretation.
+        public static uint GetBigUintConst() => 3000000000u;
     }
 
     // force_return / nop_method coverage: a bool/int/ref returner to force, and a void method to nop.
+    // Also (review fixes): a long-backed enum returner (must emit ldc.i8) and a uint returner
+    // (force_return must accept a value > int.MaxValue via its 32-bit bit pattern).
+    public enum BigEnum : long { Zero = 0L, Huge = 9000000000L }
+
     public static class Patchable
     {
         public static bool IsPremium() => false;
@@ -137,6 +144,17 @@ namespace TestIL
 
         public static int sideEffect;
         public static void Tick() { sideEffect++; }
+
+        public static BigEnum GetBigEnum() => BigEnum.Zero;
+        public static uint GetBigUint() => 0u;
+
+        // Nested-type-of-a-generic return, to exercise CSharpTypeName rendering in codegen.
+        public static System.Collections.Generic.Dictionary<int, string>.Enumerator GetEnumerator2()
+            => default;
+
+        // Overloaded name whose parameterless overload needs a Type[] disambiguator in a Harmony patch.
+        public static int Over() => 1;
+        public static int Over(int x) => x;
     }
 
     // Interface + implementors for find_overrides overridden_by on an interface method:

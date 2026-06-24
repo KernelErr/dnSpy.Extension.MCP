@@ -220,9 +220,25 @@ namespace dnSpy.Extension.MCP
                     {
                         foreach (var (index, il_offset, opcode, isInt, longVal, dblVal) in EnumerateNumericConstants(method))
                         {
-                            bool hit = intQuery
-                                ? (isInt && longVal == longTarget)
-                                : (!isInt && (dblVal == dblTarget || (float)dblVal == (float)dblTarget));
+                            bool hit;
+                            if (intQuery)
+                            {
+                                if (!isInt)
+                                    hit = false;
+                                else if (longVal == longTarget)
+                                    hit = true;
+                                else
+                                    // A uint constant > int.MaxValue is stored as ldc.i4 with a negative
+                                    // int32 bit pattern (GetLdcI4Value is signed), so reinterpret 32-bit
+                                    // loads as unsigned — e.g. 3000000000 (0xB2D05E00) becomes findable.
+                                    hit = longTarget >= 0 && longTarget <= uint.MaxValue
+                                          && opcode.StartsWith("ldc.i4", StringComparison.Ordinal)
+                                          && (longVal & 0xFFFFFFFFL) == longTarget;
+                            }
+                            else
+                            {
+                                hit = !isInt && (dblVal == dblTarget || (float)dblVal == (float)dblTarget);
+                            }
                             if (!hit)
                                 continue;
                             results.Add(new

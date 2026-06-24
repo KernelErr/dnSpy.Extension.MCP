@@ -483,8 +483,8 @@ namespace dnSpy.Extension.MCP
                 case ElementType.I2: case ElementType.U2:
                 case ElementType.I4: case ElementType.U4:
                 {
-                    int n = rv.Kind == RetKind.Default ? 0 : checked((int)rv.RequireInt());
-                    instrs.Add(Instruction.CreateLdcI4(n));
+                    long n = rv.Kind == RetKind.Default ? 0L : rv.RequireInt();
+                    instrs.Add(LdcI4InRange(n, retSig!));   // accepts the full int OR uint range; throws ArgumentException otherwise
                     instrs.Add(Instruction.Create(OpCodes.Ret));
                     return (instrs, null, $"int → {n}");
                 }
@@ -531,7 +531,13 @@ namespace dnSpy.Extension.MCP
                     if (td != null && td.IsEnum)
                     {
                         long n = rv.Kind == RetKind.Default ? 0L : rv.RequireInt();
-                        instrs.Add(Instruction.CreateLdcI4(checked((int)n)));
+                        // A long/ulong-backed enum has an 8-byte slot — it needs ldc.i8, not ldc.i4,
+                        // or the body is unverifiable. Read the underlying type to pick the opcode.
+                        var uet = td.GetEnumUnderlyingType()?.ElementType ?? ElementType.I4;
+                        if (uet == ElementType.I8 || uet == ElementType.U8)
+                            instrs.Add(Instruction.Create(OpCodes.Ldc_I8, n));
+                        else
+                            instrs.Add(LdcI4InRange(n, retSig!));
                         instrs.Add(Instruction.Create(OpCodes.Ret));
                         return (instrs, null, $"enum → {n}");
                     }
@@ -545,6 +551,17 @@ namespace dnSpy.Extension.MCP
                     return (instrs, local, $"value type → default({retSig})");
                 }
             }
+        }
+
+        // Builds a ldc.i4 for a value destined for a 32-bit (or narrower) return slot. Accepts the
+        // full int range AND the full uint range (a uint like 3000000000 is emitted as its int32 bit
+        // pattern), and throws ArgumentException — not OverflowException, so the client gets -32602 —
+        // for anything that genuinely won't fit.
+        static Instruction LdcI4InRange(long raw, TypeSig retSig)
+        {
+            if (raw < int.MinValue || raw > uint.MaxValue)
+                throw new ArgumentException($"value {raw} does not fit in a 32-bit return type ({retSig}).");
+            return Instruction.CreateLdcI4(unchecked((int)raw));
         }
 
         // ---------- snapshot helper ----------
