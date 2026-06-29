@@ -8,7 +8,6 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace dnSpy.Extension.MCP {
 	/// <summary>
@@ -41,6 +40,16 @@ namespace dnSpy.Extension.MCP {
 		};
 
 		const int portSearchAttempts = 20;
+
+		// Keep-alive ping interval for long-lived SSE / Streamable-HTTP GET streams.
+		const int sseKeepAliveMs = 15000;
+
+		// MCP protocol versions this server can speak (newest first). The transport layer
+		// supports both the 2024-11-05 HTTP+SSE flow and the 2025-03-26+ Streamable HTTP
+		// flow, and the tools/resources are version-agnostic. On initialize we echo the
+		// client's requested version when it's one of these (per the MCP lifecycle spec),
+		// otherwise we fall back to our newest supported version.
+		static readonly string[] supportedProtocolVersions = { "2025-06-18", "2025-03-26", "2024-11-05" };
 
 		/// <summary>
 		/// Probes for an available TCP port on any interface, starting at <paramref name="startPort"/>
@@ -108,32 +117,53 @@ namespace dnSpy.Extension.MCP {
 		}
 
 		void StartHttpListenerServer() {
-			Task.Run(() => {
-				try {
-					httpListener = StartBoundListener(actualPort);
-					if (httpListener == null) {
-						settings.Log("ERROR: HttpListener could not bind any loopback prefix.");
-						return;
-					}
+			// Run the accept loop on a dedicated background thread, not a ThreadPool task:
+			// the loop blocks forever in GetContext(), so on the pool it would permanently
+			// consume a worker thread.
+			var acceptThread = new Thread(AcceptLoop) {
+				IsBackground = true,
+				Name = "McpServer.Accept",
+			};
+			acceptThread.Start();
+		}
 
-					while (!cts!.Token.IsCancellationRequested) {
-						try {
-							var context = httpListener.GetContext();
-							Task.Run(() => HandleHttpRequest(context), cts.Token);
-						}
-						catch (HttpListenerException) {
-							break; // Listener was stopped
-						}
-						catch (Exception ex) {
-							settings.Log($"ERROR accepting request: {ex.GetType().Name}: {ex.Message}");
-						}
+		void AcceptLoop() {
+			try {
+				httpListener = StartBoundListener(actualPort);
+				if (httpListener == null) {
+					settings.Log("ERROR: HttpListener could not bind any loopback prefix.");
+					return;
+				}
+
+				while (!cts!.Token.IsCancellationRequested) {
+					try {
+						var context = httpListener.GetContext();
+						// Handle each request on its own dedicated background thread rather than
+						// the shared ThreadPool. The SSE / Streamable-HTTP GET handlers block for
+						// the entire lifetime of the stream; dispatched onto the ThreadPool they
+						// tie up worker threads, and on low-core machines (or across a client's
+						// handshake retries) that starves short requests like
+						// notifications/initialized, which then never get a thread and time out
+						// client-side with "context deadline exceeded". A thread per request keeps
+						// long-lived streams from competing with quick request/response calls.
+						var worker = new Thread(() => HandleHttpRequest(context)) {
+							IsBackground = true,
+							Name = "McpServer.Request",
+						};
+						worker.Start();
+					}
+					catch (HttpListenerException) {
+						break; // Listener was stopped
+					}
+					catch (Exception ex) {
+						settings.Log($"ERROR accepting request: {ex.GetType().Name}: {ex.Message}");
 					}
 				}
-				catch (Exception ex) {
-					settings.Log($"ERROR starting HttpListener: {ex.GetType().Name}: {ex.Message}");
-					httpListener = null;
-				}
-			}, cts!.Token);
+			}
+			catch (Exception ex) {
+				settings.Log($"ERROR starting HttpListener: {ex.GetType().Name}: {ex.Message}");
+				httpListener = null;
+			}
 		}
 
 		/// <summary>
@@ -301,6 +331,25 @@ namespace dnSpy.Extension.MCP {
 		}
 
 		/// <summary>
+		/// Waits up to <see cref="sseKeepAliveMs"/> for cancellation, used by the long-lived stream
+		/// keep-alive loops. Returns true when the stream should stop — either the token was signalled
+		/// or a concurrent <see cref="Stop"/> already disposed/nulled <c>cts</c>. Tolerating that
+		/// shutdown race here keeps the stream threads from throwing <see cref="ObjectDisposedException"/>
+		/// out of the loop when the server is torn down mid-wait.
+		/// </summary>
+		bool WaitForKeepAliveOrStop() {
+			var c = cts;
+			if (c == null)
+				return true;
+			try {
+				return c.Token.WaitHandle.WaitOne(sseKeepAliveMs);
+			}
+			catch (ObjectDisposedException) {
+				return true; // Stop() disposed the CTS while we were waiting — treat as cancelled.
+			}
+		}
+
+		/// <summary>
 		/// Legacy MCP 2024-11-05 SSE transport: GET /sse opens a long-lived event-stream.
 		/// The handler holds the HttpListener response open until the client disconnects or
 		/// the server shuts down. Responses to posted messages are written back over this
@@ -320,8 +369,11 @@ namespace dnSpy.Extension.MCP {
 			try {
 				session.WriteEvent("endpoint", $"/message?sessionId={sessionId}");
 
-				while (!cts!.Token.IsCancellationRequested) {
-					Thread.Sleep(15000);
+				while (true) {
+					// Cancellation-aware wait so server shutdown tears the stream down promptly
+					// instead of blocking up to a full ping interval in a plain sleep.
+					if (WaitForKeepAliveOrStop())
+						break;
 					try {
 						session.WriteComment("ping");
 					}
@@ -493,8 +545,23 @@ namespace dnSpy.Extension.MCP {
 			settings.Log($"Streamable HTTP GET stream opened: {sessionId}");
 			var session = new SseSession(sessionId!, context.Response.OutputStream);
 			try {
-				while (!cts!.Token.IsCancellationRequested) {
-					Thread.Sleep(15000);
+				// Flush the response headers immediately by writing an initial SSE comment.
+				// The official MCP client (e.g. the Go SDK used by Antigravity / Codex) opens
+				// this standalone GET stream *synchronously during connect* and blocks until
+				// the response headers arrive, before it sends notifications/initialized. If we
+				// don't commit the headers until the first keep-alive ping one interval later,
+				// that GET hangs, the client's connect deadline expires, and the follow-up
+				// notifications/initialized POST fails with "context deadline exceeded". Writing
+				// now unblocks the client at once (the legacy SSE GET above flushes its
+				// 'endpoint' event immediately for the same reason, which is why it was never
+				// affected).
+				session.WriteComment("ok");
+
+				while (true) {
+					// Cancellation-aware wait so server shutdown tears the stream down promptly
+					// instead of blocking up to a full ping interval in a plain sleep.
+					if (WaitForKeepAliveOrStop())
+						break;
 					try {
 						session.WriteComment("ping");
 					}
@@ -584,7 +651,7 @@ namespace dnSpy.Extension.MCP {
 				settings.Log($"MCP request: {request.Method}");
 
 				var result = request.Method switch {
-					"initialize" => HandleInitialize(),
+					"initialize" => HandleInitialize(request.Params),
 					"ping" => HandlePing(),
 					"tools/list" => HandleListTools(),
 					"tools/call" => HandleCallTool(request.Params),
@@ -625,9 +692,13 @@ namespace dnSpy.Extension.MCP {
 			}
 		}
 
-		object HandleInitialize() {
+		object HandleInitialize(Dictionary<string, object>? parameters) {
+			// Per the MCP lifecycle spec the server MUST reply with the client's requested
+			// protocol version if it supports it, otherwise with its own newest supported
+			// version. Hardcoding 2024-11-05 (the pre-Streamable-HTTP revision) ignored the
+			// client's request; we negotiate instead.
 			return new InitializeResult {
-				ProtocolVersion = "2024-11-05",
+				ProtocolVersion = NegotiateProtocolVersion(parameters),
 				Capabilities = new ServerCapabilities {
 					Tools = new Dictionary<string, object>(),
 					Resources = new Dictionary<string, object>()
@@ -637,6 +708,27 @@ namespace dnSpy.Extension.MCP {
 					Version = "1.0.0"
 				}
 			};
+		}
+
+		/// <summary>
+		/// Picks the protocol version to advertise in the initialize result: the client's
+		/// requested version when we support it, else our newest supported version. The
+		/// client sends <c>protocolVersion</c> in the initialize params; with
+		/// <see cref="System.Text.Json"/> the value arrives as a <see cref="JsonElement"/>.
+		/// </summary>
+		static string NegotiateProtocolVersion(Dictionary<string, object>? parameters) {
+			string? requested = null;
+			if (parameters != null && parameters.TryGetValue("protocolVersion", out var pv)) {
+				if (pv is JsonElement je && je.ValueKind == JsonValueKind.String)
+					requested = je.GetString();
+				else if (pv is string s)
+					requested = s;
+			}
+
+			if (!string.IsNullOrEmpty(requested) && Array.IndexOf(supportedProtocolVersions, requested) >= 0)
+				return requested!;
+
+			return supportedProtocolVersions[0];
 		}
 
 		object HandlePing() {
