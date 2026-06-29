@@ -331,6 +331,25 @@ namespace dnSpy.Extension.MCP {
 		}
 
 		/// <summary>
+		/// Waits up to <see cref="sseKeepAliveMs"/> for cancellation, used by the long-lived stream
+		/// keep-alive loops. Returns true when the stream should stop — either the token was signalled
+		/// or a concurrent <see cref="Stop"/> already disposed/nulled <c>cts</c>. Tolerating that
+		/// shutdown race here keeps the stream threads from throwing <see cref="ObjectDisposedException"/>
+		/// out of the loop when the server is torn down mid-wait.
+		/// </summary>
+		bool WaitForKeepAliveOrStop() {
+			var c = cts;
+			if (c == null)
+				return true;
+			try {
+				return c.Token.WaitHandle.WaitOne(sseKeepAliveMs);
+			}
+			catch (ObjectDisposedException) {
+				return true; // Stop() disposed the CTS while we were waiting — treat as cancelled.
+			}
+		}
+
+		/// <summary>
 		/// Legacy MCP 2024-11-05 SSE transport: GET /sse opens a long-lived event-stream.
 		/// The handler holds the HttpListener response open until the client disconnects or
 		/// the server shuts down. Responses to posted messages are written back over this
@@ -350,10 +369,10 @@ namespace dnSpy.Extension.MCP {
 			try {
 				session.WriteEvent("endpoint", $"/message?sessionId={sessionId}");
 
-				while (!cts!.Token.IsCancellationRequested) {
+				while (true) {
 					// Cancellation-aware wait so server shutdown tears the stream down promptly
 					// instead of blocking up to a full ping interval in a plain sleep.
-					if (cts.Token.WaitHandle.WaitOne(sseKeepAliveMs))
+					if (WaitForKeepAliveOrStop())
 						break;
 					try {
 						session.WriteComment("ping");
@@ -538,10 +557,10 @@ namespace dnSpy.Extension.MCP {
 				// affected).
 				session.WriteComment("ok");
 
-				while (!cts!.Token.IsCancellationRequested) {
+				while (true) {
 					// Cancellation-aware wait so server shutdown tears the stream down promptly
 					// instead of blocking up to a full ping interval in a plain sleep.
-					if (cts.Token.WaitHandle.WaitOne(sseKeepAliveMs))
+					if (WaitForKeepAliveOrStop())
 						break;
 					try {
 						session.WriteComment("ping");
