@@ -136,7 +136,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "get_type_info",
-                    Description = "Get detailed information about a specific type including its members. First request returns all fields/properties and paginated methods. Subsequent requests (with cursor) return only paginated methods. Use compact=true to drop per-member detail (name+signature+token only) and members_filter to return only members whose name matches a pattern (e.g. '*Save*') — both cut token cost sharply on large types.",
+                    Description = "Get detailed information about a specific type including its members. First request returns all fields/properties and paginated methods. Subsequent requests (with cursor) return only paginated methods. Use compact=true to drop per-member detail (name+signature+token only) and members_filter to return only members whose name matches a pattern (e.g. '*Save*') — both cut token cost sharply on large types. Field rows also carry Offset/OffsetSource/Il2CppToken when discoverable (real FieldLayout or Il2CppDumper synthetic [FieldOffset]/[Token] attributes on Unity IL2CPP dumps); omitted on normal managed fields.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -235,7 +235,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "search_members",
-                    Description = "Search for MEMBERS (methods / fields / properties / events) by name across all loaded assemblies (or one via assembly_name) — the member counterpart of search_types, together covering dnSpy's Ctrl+Shift+K 'Search Assemblies'. Use this when you have a bare member name (e.g. from decompiled code) but DON'T know its declaring type: each hit returns assembly, declaring_type, member_kind, name, full signature, the MDToken (uint), is_static and is_public. Feed token straight into decompile_by_token, or declaring_type + name into find_callers / find_references to see how the symbol is used. Paginated (default page size 10; override with page_size); names_only returns a compact list of signatures.",
+                    Description = "Search for MEMBERS (methods / fields / properties / events) by name across all loaded assemblies (or one via assembly_name) — the member counterpart of search_types, together covering dnSpy's Ctrl+Shift+K 'Search Assemblies'. Use this when you have a bare member name (e.g. from decompiled code) but DON'T know its declaring type: each hit returns assembly, declaring_type, member_kind, name, full signature, the MDToken (uint), is_static and is_public. Field hits additionally carry offset/offset_source/il2cpp_token when discoverable (real FieldLayout or Il2CppDumper synthetic [FieldOffset]/[Token] attributes on Unity IL2CPP dumps); omitted otherwise. Feed token straight into decompile_by_token, or declaring_type + name into find_callers / find_references to see how the symbol is used. Paginated (default page size 10; override with page_size); names_only returns a compact list of signatures.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -673,7 +673,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "get_type_fields",
-                    Description = "Get fields from a type matching a name pattern (supports wildcards like *Bonus*). Supports pagination with default page size of 10 fields.",
+                    Description = "Get fields from a type matching a name pattern (supports wildcards like *Bonus*). Supports pagination with default page size of 10 fields. Each field row also carries an Offset when one is discoverable — either a real [StructLayout(Explicit)] FieldLayout row (OffsetSource='field-layout') or an Il2CppDumper 'dummy DLL' synthetic [FieldOffset(Offset=\"0x330\")] attribute (OffsetSource='il2cpp', typical of Unity IL2CPP dumps). The paired Il2CppDumper [Token(Token=\"0x4000B02\")] surfaces as Il2CppToken. All three keys are omitted on normal managed fields with no offset info.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -1364,16 +1364,25 @@ namespace dnSpy.Extension.MCP
                     }).ToList()
                 }).ToList();
 
-            var fields = type.Fields.Where(f => memberMatch(f.Name.String)).Select(f => compact
-                ? (object)new { Name = f.Name.String, Type = f.FieldType.FullName }
-                : new
+            var fields = type.Fields.Where(f => memberMatch(f.Name.String)).Select(f =>
+            {
+                var row = new Dictionary<string, object>
                 {
-                    Name = f.Name.String,
-                    Type = f.FieldType.FullName,
-                    IsPublic = f.IsPublic,
-                    IsStatic = f.IsStatic,
-                    IsLiteral = f.IsLiteral
-                }).ToList();
+                    ["Name"] = f.Name.String,
+                    ["Type"] = f.FieldType.FullName
+                };
+                if (!compact)
+                {
+                    row["IsPublic"] = f.IsPublic;
+                    row["IsStatic"] = f.IsStatic;
+                    row["IsLiteral"] = f.IsLiteral;
+                }
+                ReadFieldOffsetInfo(f, out var off, out var src, out var tok);
+                if (off != null) row["Offset"] = off;
+                if (src != null) row["OffsetSource"] = src;
+                if (tok != null) row["Il2CppToken"] = tok;
+                return (object)row;
+            }).ToList();
 
             var properties = type.Properties.Where(p => memberMatch(p.Name.String)).Select(p => compact
                 ? (object)new { Name = p.Name.String, Type = p.PropertySig?.RetType?.FullName ?? "unknown" }
@@ -1794,8 +1803,9 @@ namespace dnSpy.Extension.MCP
                     {
                         if (!matches(f.Name.String))
                             continue;
+                        ReadFieldOffsetInfo(f, out var off, out var src, out var tok);
                         hits.Add(new MemberHit(assemblyDisplay, typeFullName, "field", f.Name.String,
-                            f.FullName, f.MDToken.Raw, f.IsStatic, f.IsPublic));
+                            f.FullName, f.MDToken.Raw, f.IsStatic, f.IsPublic, off, src, tok));
                     }
                 }
                 if (wantProperties)
@@ -1826,16 +1836,23 @@ namespace dnSpy.Extension.MCP
                 return CreatePaginatedResponse(hits.Select(h => h.signature).ToList(), offset, pageSize);
 
             var results = hits
-                .Select(h => (object)new
+                .Select(h =>
                 {
-                    assembly = h.assembly,
-                    declaring_type = h.declaring_type,
-                    member_kind = h.member_kind,
-                    name = h.name,
-                    signature = h.signature,
-                    token = h.token,
-                    is_static = h.is_static,
-                    is_public = h.is_public,
+                    var row = new Dictionary<string, object>
+                    {
+                        ["assembly"] = h.assembly,
+                        ["declaring_type"] = h.declaring_type,
+                        ["member_kind"] = h.member_kind,
+                        ["name"] = h.name,
+                        ["signature"] = h.signature,
+                        ["token"] = h.token,
+                        ["is_static"] = h.is_static,
+                        ["is_public"] = h.is_public,
+                    };
+                    if (h.offset != null) row["offset"] = h.offset;
+                    if (h.offset_source != null) row["offset_source"] = h.offset_source;
+                    if (h.il2cpp_token != null) row["il2cpp_token"] = h.il2cpp_token;
+                    return (object)row;
                 })
                 .ToList();
 
@@ -1843,6 +1860,9 @@ namespace dnSpy.Extension.MCP
         }
 
         // Lightweight carrier so the projection (full row vs names_only) is computed once per match.
+        // offset / offset_source / il2cpp_token are populated only for field hits that actually
+        // carry offset info (real FieldLayout or IL2CPP dummy-DLL synthetic attributes); null on
+        // every other member kind, so the projection can decide per-row whether to emit them.
         readonly struct MemberHit
         {
             public readonly string assembly;
@@ -1853,9 +1873,13 @@ namespace dnSpy.Extension.MCP
             public readonly uint token;
             public readonly bool is_static;
             public readonly bool is_public;
+            public readonly string? offset;
+            public readonly string? offset_source;
+            public readonly string? il2cpp_token;
 
             public MemberHit(string assembly, string declaringType, string memberKind, string name,
-                string signature, uint token, bool isStatic, bool isPublic)
+                string signature, uint token, bool isStatic, bool isPublic,
+                string? offset = null, string? offsetSource = null, string? il2cppToken = null)
             {
                 this.assembly = assembly;
                 declaring_type = declaringType;
@@ -1865,6 +1889,9 @@ namespace dnSpy.Extension.MCP
                 this.token = token;
                 is_static = isStatic;
                 is_public = isPublic;
+                this.offset = offset;
+                offset_source = offsetSource;
+                il2cpp_token = il2cppToken;
             }
         }
 
@@ -2490,6 +2517,66 @@ namespace dnSpy.Extension.MCP
             return null;
         }
 
+        // Extracts a runtime field offset when one is discoverable. Two sources are
+        // supported and both are common in Unity/IL2CPP reverse-engineering workflows:
+        //   1) Real .NET explicit-layout structs: dnlib surfaces the FieldLayout table
+        //      row as FieldDef.FieldOffset (uint?). This is what [StructLayout(Explicit)]
+        //      + [FieldOffset(0x30)] produces in normal C#.
+        //   2) Il2CppDumper "dummy DLLs": Unity IL2CPP builds are dumped as C# assemblies
+        //      where every field is annotated with a synthetic [FieldOffset(Offset = "0x330")]
+        //      and often a paired [Token(Token = "0x4000B02")]. Both are named-argument
+        //      custom attributes carrying STRINGS (not real FieldLayout metadata).
+        // Emits offset / offsetSource / il2cppToken as nullable strings; callers add them
+        // to their response row only when non-null (see the "only when present" contract).
+        static void ReadFieldOffsetInfo(FieldDef field, out string? offset, out string? offsetSource, out string? il2cppToken)
+        {
+            offset = null;
+            offsetSource = null;
+            il2cppToken = null;
+
+            if (field.FieldOffset.HasValue)
+            {
+                offset = "0x" + field.FieldOffset.Value.ToString("X");
+                offsetSource = "field-layout";
+            }
+
+            foreach (var ca in field.CustomAttributes)
+            {
+                var name = ca.AttributeType?.Name?.String;
+                if (name == null)
+                    continue;
+                if (offset == null && (name == "FieldOffsetAttribute" || name == "FieldOffset"))
+                {
+                    var v = ReadNamedStringArg(ca, "Offset");
+                    if (v != null)
+                    {
+                        offset = v;
+                        offsetSource = "il2cpp";
+                    }
+                }
+                else if (il2cppToken == null && (name == "TokenAttribute" || name == "Token"))
+                {
+                    il2cppToken = ReadNamedStringArg(ca, "Token");
+                }
+            }
+        }
+
+        static string? ReadNamedStringArg(CustomAttribute ca, string argName)
+        {
+            foreach (var na in ca.NamedArguments)
+            {
+                if (na.Name != argName)
+                    continue;
+                var v = na.Argument.Value;
+                if (v is UTF8String u)
+                    return u.String;
+                if (v is string s)
+                    return s;
+                return v?.ToString();
+            }
+            return null;
+        }
+
         CallToolResult GetTypeFields(Dictionary<string, object>? arguments)
         {
             if (arguments == null)
@@ -2525,15 +2612,23 @@ namespace dnSpy.Extension.MCP
 
             var allMatchingFields = type.Fields
                 .Where(f => regex.IsMatch(f.Name.String))
-                .Select(f => new
+                .Select(f =>
                 {
-                    Name = f.Name.String,
-                    Type = f.FieldType.FullName,
-                    IsPublic = f.IsPublic,
-                    IsStatic = f.IsStatic,
-                    IsLiteral = f.IsLiteral,
-                    IsReadOnly = f.IsInitOnly,
-                    Attributes = f.Attributes.ToString()
+                    var row = new Dictionary<string, object>
+                    {
+                        ["Name"] = f.Name.String,
+                        ["Type"] = f.FieldType.FullName,
+                        ["IsPublic"] = f.IsPublic,
+                        ["IsStatic"] = f.IsStatic,
+                        ["IsLiteral"] = f.IsLiteral,
+                        ["IsReadOnly"] = f.IsInitOnly,
+                        ["Attributes"] = f.Attributes.ToString()
+                    };
+                    ReadFieldOffsetInfo(f, out var off, out var src, out var tok);
+                    if (off != null) row["Offset"] = off;
+                    if (src != null) row["OffsetSource"] = src;
+                    if (tok != null) row["Il2CppToken"] = tok;
+                    return row;
                 })
                 .ToList();
 
