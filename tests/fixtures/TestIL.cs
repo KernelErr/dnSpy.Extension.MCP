@@ -183,4 +183,34 @@ namespace TestIL
             counter += 100;
         }
     }
+
+    // Explicit-layout struct: the real [FieldOffset] is compiled into the ECMA-335 FieldLayout
+    // table (not retained as a custom attribute), so dnlib surfaces it as FieldDef.FieldOffset.
+    // Covers the OffsetSource="field-layout" branch of ReadFieldOffsetInfo.
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit)]
+    public struct ExplicitLayout
+    {
+        [System.Runtime.InteropServices.FieldOffset(0)] public int First;
+        [System.Runtime.InteropServices.FieldOffset(8)] public long Second;
+    }
+}
+
+// Mimics an Il2CppDumper "dummy DLL": every field is annotated with synthetic attributes whose
+// short names are FieldOffsetAttribute / TokenAttribute, carrying NAMED STRING args (not the real
+// FieldLayout metadata, and not the positional-int System.Runtime.InteropServices.FieldOffset).
+// Covers the OffsetSource="il2cpp" + Il2CppToken branch of ReadFieldOffsetInfo.
+namespace TestIL.Il2Cpp
+{
+    [System.AttributeUsage(System.AttributeTargets.All)]
+    public sealed class FieldOffsetAttribute : System.Attribute { public string Offset; }
+
+    [System.AttributeUsage(System.AttributeTargets.All)]
+    public sealed class TokenAttribute : System.Attribute { public string Token; }
+
+    public class DumpedType
+    {
+        [FieldOffset(Offset = "0x330")]
+        [Token(Token = "0x4000B02")]
+        public int health;
+    }
 }

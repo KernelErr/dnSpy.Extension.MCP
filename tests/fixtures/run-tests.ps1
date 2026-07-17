@@ -761,6 +761,41 @@ try
         hooks=@(@{ type_name='TestIL.Simple'; method_name='AddOne'; patch_type='transpiler' })
     }
     Assert (($tp -match 'using System\.Collections\.Generic;') -and ($tp -match 'using System\.Reflection\.Emit;')) "transpiler hook adds the required usings to the plugin header" "src:`n$tp"
+
+    # ----- field offsets (Il2CppDumper + FieldLayout) -----
+    Write-Host ""
+    Write-Host "[FO-1] get_type_fields: explicit-layout struct -> FieldLayout offset"
+    $el = Rpc 'get_type_fields' @{ assembly_name='TestIL'; type_full_name='TestIL.ExplicitLayout'; pattern='Second' }
+    $second = @($el.Fields | Where-Object { $_.Name -eq 'Second' })[0]
+    Assert ($second.Offset -eq '0x8' -and $second.OffsetSource -eq 'field-layout') "Second carries FieldLayout offset 0x8" "off=$($second.Offset)/$($second.OffsetSource)"
+    Assert ($null -eq $second.Il2CppToken) "no Il2CppToken on a managed field-layout field"
+
+    Write-Host ""
+    Write-Host "[FO-2] get_type_fields: Il2CppDumper synthetic [FieldOffset]/[Token]"
+    $dt = Rpc 'get_type_fields' @{ assembly_name='TestIL'; type_full_name='TestIL.Il2Cpp.DumpedType'; pattern='health' }
+    $health = @($dt.Fields | Where-Object { $_.Name -eq 'health' })[0]
+    Assert ($health.Offset -eq '0x330' -and $health.OffsetSource -eq 'il2cpp') "health carries il2cpp offset 0x330" "off=$($health.Offset)/$($health.OffsetSource)"
+    Assert ($health.Il2CppToken -eq '0x4000B02') "paired Il2CppDumper [Token] surfaces as Il2CppToken" "tok=$($health.Il2CppToken)"
+
+    Write-Host ""
+    Write-Host "[FO-3] get_type_fields: ordinary managed field omits offset keys"
+    $mc = Rpc 'get_type_fields' @{ assembly_name='TestIL'; type_full_name='TestIL.Machines'; pattern='counter' }
+    $counter = @($mc.Fields | Where-Object { $_.Name -eq 'counter' })[0]
+    Assert ($null -eq $counter.Offset -and $null -eq $counter.OffsetSource -and $null -eq $counter.Il2CppToken) "counter has no offset keys" "off=$($counter.Offset)"
+
+    Write-Host ""
+    Write-Host "[FO-4] get_type_info (compact): field offset present on IL2CPP field"
+    $gi = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name='TestIL.Il2Cpp.DumpedType'; compact=$true }
+    $giHealth = @($gi.Fields | Where-Object { $_.Name -eq 'health' })[0]
+    Assert ($giHealth.Offset -eq '0x330' -and $giHealth.OffsetSource -eq 'il2cpp' -and $giHealth.Il2CppToken -eq '0x4000B02') "get_type_info compact field carries offset + token" "off=$($giHealth.Offset) tok=$($giHealth.Il2CppToken)"
+
+    Write-Host ""
+    Write-Host "[FO-5] search_members: field hit carries snake_case offset keys"
+    $sm = Rpc 'search_members' @{ query='health'; assembly_name='TestIL' }
+    # TestIL has more than one field named 'health' (a plain one + the IL2CPP-dumped one), so scope
+    # by declaring_type — mirrors how a real caller disambiguates a global member-search hit.
+    $smHealth = @($sm.items | Where-Object { $_.member_kind -eq 'field' -and $_.declaring_type -eq 'TestIL.Il2Cpp.DumpedType' })[0]
+    Assert ($smHealth.offset -eq '0x330' -and $smHealth.offset_source -eq 'il2cpp' -and $smHealth.il2cpp_token -eq '0x4000B02') "search_members field hit: offset/offset_source/il2cpp_token" "off=$($smHealth.offset) tok=$($smHealth.il2cpp_token)"
 }
 finally
 {
