@@ -13,6 +13,13 @@ on:
         required: true
         type: string
 
+env:
+  # dnSpyEx version shipped inside the all-in-one zips AND targeted by the standalone extension
+  # DLLs. Must be a released tag and must match build.yml's DNSPY_REF: building against master
+  # would put an unreleased dnSpy snapshot in users' zips, and would pin the net48 NuGet versions
+  # to whatever master resolved that day — which is exactly how issue #21 shipped.
+  DNSPY_REF: v6.6.0
+
 jobs:
   release:
     name: Build and attach artifacts
@@ -43,6 +50,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: dnSpyEx/dnSpy
+          ref: ${{ env.DNSPY_REF }}
           path: dnSpy
           submodules: recursive
 

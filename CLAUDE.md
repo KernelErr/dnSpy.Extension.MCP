@@ -22,6 +22,8 @@ Output: `bin/<Config>/<TFM>/dnSpy.Extension.MCP.x.dll`. The **`.x` suffix is man
 
 There is no test suite. CI (`.github/workflows/build.yml`) just builds both TFMs; `release.yml` runs the parent repo's `build.ps1` and ships all-in-one zips on `v*.*.*` tags.
 
+**We build against a pinned dnSpyEx tag, never master.** Both workflows set `DNSPY_REF` (currently `v6.6.0`) and pass it as the checkout `ref`. This is load-bearing for two reasons: the all-in-one zips *bundle* that dnSpy build, so tracking master would ship users an unreleased snapshot; and the standalone extension DLL gets dropped into whatever dnSpy the user installed — the official release — whose net48 NuGet versions our own pins must match exactly (see the net48 binding note under Conventions). Building against master made that target move day to day, which is how issue #21 shipped. To adopt a newer dnSpy: bump `DNSPY_REF` in **both** workflows, check out that tag locally (`git -C ../../ checkout <tag> && git submodule update --init --recursive`), run `tests/check-host-deps.ps1`, and update whatever net48 `PackageReference` it flags. Keep local checkouts on the pinned tag — the guard warns when they drift, because otherwise its version comparison describes your checkout rather than what we ship.
+
 ## Architecture
 
 - **`TheExtension.cs`** — `[ExportExtension]` MEF entry. Starts the server on `ExtensionEvent.Loaded` (if enabled), stops it on `AppExit`.

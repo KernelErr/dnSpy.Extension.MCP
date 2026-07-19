@@ -67,6 +67,43 @@ if ($Restore) {
     if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed for $extDir" }
 }
 
+# The pinned dnSpyEx tag is the contract: CI, releases, and this comparison are only meaningful
+# if they all target the same upstream version. Verify the two workflows agree, and warn when the
+# local checkout has drifted (in CI the checkout IS the pinned ref, so CI stays authoritative).
+function Get-PinnedDnSpyRef([string]$workflow)
+{
+    $path = Join-Path $extDir ".github\workflows\$workflow"
+    if (-not (Test-Path $path)) { return $null }
+    $m = Select-String -Path $path -Pattern '^\s*DNSPY_REF:\s*(\S+)' | Select-Object -First 1
+    if (-not $m) { return $null }
+    return $m.Matches[0].Groups[1].Value
+}
+
+$buildRef   = Get-PinnedDnSpyRef 'build.yml'
+$releaseRef = Get-PinnedDnSpyRef 'release.yml'
+$pinnedRef  = $buildRef
+
+if ($buildRef -and $releaseRef -and $buildRef -ne $releaseRef) {
+    Write-Host "DNSPY_REF mismatch between workflows:" -ForegroundColor Red
+    Write-Host "  build.yml:   $buildRef" -ForegroundColor Red
+    Write-Host "  release.yml: $releaseRef" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "CI would validate against one dnSpy version while releases ship another."
+    exit 1
+}
+
+if ($pinnedRef) {
+    Write-Host "Pinned dnSpyEx ref: $pinnedRef"
+    $localRef = & git -C $DnSpyProject describe --tags --exact-match 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $localRef) { $localRef = (& git -C $DnSpyProject rev-parse --short HEAD 2>$null) }
+    if ($localRef -and $localRef.Trim() -ne $pinnedRef) {
+        Write-Host "  WARNING: local dnSpy checkout is at '$($localRef.Trim())', not '$pinnedRef'." -ForegroundColor Yellow
+        Write-Host "  The versions below reflect your checkout, not the version we ship against." -ForegroundColor Yellow
+        Write-Host "  Run: git -C `"$DnSpyProject`" checkout $pinnedRef && git submodule update --init --recursive" -ForegroundColor Yellow
+    }
+    Write-Host ""
+}
+
 $hostVersions = Get-Net48PackageVersions $DnSpyProject 'dnSpy'
 $extVersions  = Get-Net48PackageVersions $extDir      'extension'
 

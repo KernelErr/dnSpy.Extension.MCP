@@ -11,6 +11,16 @@ on:
       - main
   workflow_dispatch:
 
+env:
+  # Pin the dnSpyEx version we build against. This must be a released tag, not master:
+  #  - the all-in-one zips bundle this dnSpy, so users would otherwise get an unreleased snapshot;
+  #  - the standalone extension DLL is dropped into whatever dnSpy users installed, i.e. the
+  #    official release — and on net48 its NuGet versions must match ours exactly (see issue #21
+  #    and tests/check-host-deps.ps1), which is only stable if this ref is stable.
+  # To adopt a newer dnSpy: bump this (and the same value in release.yml), run
+  # tests/check-host-deps.ps1, and update any net48 PackageReference it flags.
+  DNSPY_REF: v6.6.0
+
 jobs:
   build:
     name: Build MCP Extension
@@ -29,6 +39,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: dnSpyEx/dnSpy
+          ref: ${{ env.DNSPY_REF }}
           path: dnSpy
           submodules: recursive
 
