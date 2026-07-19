@@ -34,13 +34,19 @@ param(
     # which collides with HttpListener.Start even when TcpListener probes clean.
     [int]$Port = 3100,
     [string]$DnSpyExe,
+    # Which dnSpy distribution to drive. net48 is not just a second build of the same thing: it
+    # resolves System.Text.Json from NuGet instead of the BCL and binds assemblies by exact
+    # version with no redirects, so runtime faults that net10 rolls forward past (issue #21) only
+    # reproduce here. Build it with: ./build.ps1 -NoMsbuild -buildtfm netframework
+    [ValidateSet('net10.0-windows', 'net48')]
+    [string]$Tfm = 'net10.0-windows',
     [switch]$SkipBuild,
     [switch]$KeepDnSpy
 )
 
 $ErrorActionPreference = 'Stop'
 $fixtureDir = $PSScriptRoot
-if (-not $DnSpyExe) { $DnSpyExe = Join-Path $fixtureDir '..\..\..\..\dnSpy\dnSpy\bin\Release\net10.0-windows\dnSpy.exe' }
+if (-not $DnSpyExe) { $DnSpyExe = Join-Path $fixtureDir "..\..\..\..\dnSpy\dnSpy\bin\Release\$Tfm\dnSpy.exe" }
 
 # Force dnSpy's MCP server onto the port we want by rewriting the persisted setting.
 # The GUID must match McpSettingsImpl's SETTINGS_GUID.
@@ -59,9 +65,12 @@ function Set-McpPortInSettings([int]$p)
 $extDir = Split-Path $fixtureDir -Parent | Split-Path -Parent
 $binFixture = Join-Path $fixtureDir 'bin'
 $testDll = Join-Path $binFixture 'TestIL.dll'
-$extDllSrc = Join-Path $extDir 'bin\Release\net10.0-windows\dnSpy.Extension.MCP.x.dll'
+$extDllSrc = Join-Path $extDir "bin\Release\$Tfm\dnSpy.Extension.MCP.x.dll"
 $resolved = Resolve-Path $DnSpyExe -ErrorAction SilentlyContinue
-if (-not $resolved) { throw "dnSpy.exe not found at $DnSpyExe. Build the Release/net10.0-windows config first." }
+if (-not $resolved) {
+    $hint = if ($Tfm -eq 'net48') { './build.ps1 -NoMsbuild -buildtfm netframework' } else { './build.ps1 -NoMsbuild -buildtfm net' }
+    throw "dnSpy.exe not found at $DnSpyExe. Build the Release/$Tfm distribution first: $hint"
+}
 $dnSpyExeFull = $resolved.Path
 $extDeployDir = Join-Path (Split-Path $dnSpyExeFull -Parent) 'bin\Extensions\dnSpy.Extension.MCP'
 

@@ -45,6 +45,14 @@ jobs:
         shell: pwsh
         run: Move-Item -Path dnSpy.Extension.MCP -Destination dnSpy\Extensions\dnSpy.Extension.MCP -Force
 
+      # net48 uses strict assembly binding and dnSpy ships no binding redirects, so a NuGet
+      # version that drifts from dnSpy's own net48 resolution builds fine and then throws
+      # FileNotFoundException on the first MCP request at runtime (issue #21). Catch it here.
+      - name: Check net48 dependency versions match dnSpy
+        shell: pwsh
+        working-directory: dnSpy\Extensions\dnSpy.Extension.MCP
+        run: .\tests\check-host-deps.ps1 -Restore
+
       - name: Build extension (net48)
         shell: pwsh
         working-directory: dnSpy\Extensions\dnSpy.Extension.MCP

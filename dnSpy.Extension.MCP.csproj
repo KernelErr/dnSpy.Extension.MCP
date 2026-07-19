@@ -28,9 +28,20 @@
     during MEF composition and the extension's IExtension part is silently skipped.
   -->
 
-  <!-- System.Text.Json is in the BCL for .NET 10; needs a package on .NET Framework 4.8. -->
+  <!--
+    System.Text.Json is in the BCL for .NET 10; on .NET Framework 4.8 it needs a package.
+
+    The version MUST match the one dnSpy's own net48 build resolves (it arrives there
+    transitively, so dnSpy declares no explicit reference we could inherit). .NET Framework uses
+    strict assembly binding and dnSpy ships no binding redirect for System.Text.Json, so a
+    mismatch is not a build error — the extension loads, the HTTP server starts, and then the
+    first MCP request dies inside HandleHttpRequest with FileNotFoundException. (.NET 10 rolls
+    forward, which is why this only ever bites net48.) See issue #21.
+
+    tests/check-host-deps.ps1 asserts this stays in sync; CI runs it on every build.
+  -->
   <ItemGroup Condition=" '$(IsDotNetFramework)' == 'true' ">
-    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    <PackageReference Include="System.Text.Json" Version="9.0.0" />
   </ItemGroup>
 
 </Project>
