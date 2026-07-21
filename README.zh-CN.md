@@ -43,7 +43,7 @@ English: see [README.md](README.md).
 10. **find_path_to_type** — 基于字段/属性对两个类型做 BFS 路径搜索
 11. **decompile_method** — 将方法反编译为 C#（可通过 `parameter_types` / `method_token` 精确区分重载）。嵌套类型可寻址（`Outer/Inner`，`.`/`+`/`/` 都接受），因此可直接反编译状态机的 `MoveNext`。对 async/iterator 的 kickoff，当反编译器无法把状态机内联回 `await`/`yield` 时（Unity 产物常见），会自动把原始 `MoveNext` 体附在后面（`include_state_machine=false` 可关闭）
 12. **decompile_type** — 按名字反编译**整个类型**（全部成员）为 C#——"点开类看完整源码"的视图，一次拿全。嵌套类型可寻址。类型很大时建议改用 `get_type_info`（compact）或 `decompile_method`
-13. **decompile_by_token** — 仅凭 `MDToken` 反编译方法（或类型），不需要类型名——特别适合直接拿 xref / 字符串搜索 / 成员搜索结果里的 token（建议带 `assembly_name`,token 是按模块唯一的）。与 `decompile_method` 同样的 async/iterator 兜底
+13. **decompile_by_token** — 仅凭 `MDToken` 反编译方法（或类型），不需要类型名——特别适合直接拿 xref / 字符串搜索 / 成员搜索结果里的 token（建议带 `assembly_name`,token 是按模块唯一的）。与 `decompile_method` 同样的 async/iterator 兜底。所有 token 入参（`token`、`method_token`）都接受十进制 uint 或 `0x` 前缀的十六进制字符串，从 dnSpy 界面复制的 token 可直接使用
 
 #### 交叉引用（xref）
 

@@ -43,7 +43,7 @@ From zero to "ask Claude about your assembly" in a few minutes:
 10. **find_path_to_type** — BFS over fields/properties to connect two types
 11. **decompile_method** — decompile a method to C# (accepts `parameter_types` / `method_token` to disambiguate overloads). Nested types are addressable (`Outer/Inner`, `.`/`+`/`/` all accepted), so you can decompile a state machine's `MoveNext` directly. For async/iterator kickoffs, when the decompiler can't inline the state machine back into `await`/`yield` (common on Unity output) the raw `MoveNext` body is appended automatically (`include_state_machine=false` to opt out)
 12. **decompile_type** — decompile a whole type to C# (all members) by name — the "click the class and read its source" view, in one call. Nested types addressable. For very large types prefer `get_type_info` (compact) or `decompile_method`
-13. **decompile_by_token** — decompile a method (or type) by `MDToken` alone, no type name needed — ideal for tokens straight from xref / string-search / member-search results (`assembly_name` recommended; tokens are per-module). Same async/iterator rescue as `decompile_method`
+13. **decompile_by_token** — decompile a method (or type) by `MDToken` alone, no type name needed — ideal for tokens straight from xref / string-search / member-search results (`assembly_name` recommended; tokens are per-module). Same async/iterator rescue as `decompile_method`. Token inputs everywhere (`token`, `method_token`) accept a decimal uint or a `0x`-prefixed hex string, so a token copied from dnSpy's UI works as-is
 
 #### Cross-references (xref)
 

@@ -419,6 +419,12 @@ try
     Assert ($byTok -match 'AddOne') "decompile_by_token resolves AddOne without a type name"
 
     Write-Host ""
+    Write-Host "[18e2] decompile_by_token accepts a '0x' hex string token (as dnSpy's UI shows)"
+    $hexTok = '0x{0:X8}' -f [uint32]$addOneTok
+    $byHexTok = RpcText 'decompile_by_token' @{ token=$hexTok; assembly_name='TestIL' }
+    Assert ($byHexTok -match 'AddOne') "decompile_by_token resolves a hex token string" "hexTok=$hexTok"
+
+    Write-Host ""
     Write-Host "[18f] decompile_by_token reaches nested state machine MoveNext"
     $smMethods = Rpc 'list_methods' @{ assembly_name='TestIL'; type_full_name=$asyncSM.FullName }
     $mnTok = ($smMethods.items | Where-Object { $_.name -eq 'MoveNext' } | Select-Object -First 1).token
