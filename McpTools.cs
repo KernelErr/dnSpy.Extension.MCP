@@ -192,8 +192,8 @@ namespace dnSpy.Extension.MCP
                                 ["description"] = "Optional. Fully-qualified parameter type names (e.g. [\"System.Int32\",\"System.String\"]) to disambiguate overloads. Matches MethodSig.Params, not including 'this'."
                             },
                             ["method_token"] = new Dictionary<string, object> {
-                                ["type"] = "integer",
-                                ["description"] = "Optional. MDToken.Raw as uint (from get_type_info or list_methods). Unambiguous — takes precedence over parameter_types."
+                                ["type"] = new List<string> { "integer", "string" },
+                                ["description"] = "Optional. MDToken.Raw (from get_type_info or list_methods) — decimal uint or hex string ('0x06000001', as dnSpy shows). Unambiguous — takes precedence over parameter_types."
                             },
                             ["include_state_machine"] = new Dictionary<string, object> {
                                 ["type"] = "boolean",
@@ -293,8 +293,8 @@ namespace dnSpy.Extension.MCP
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
                             ["token"] = new Dictionary<string, object> {
-                                ["type"] = "integer",
-                                ["description"] = "MDToken.Raw as uint (e.g. the method_token / caller_token returned by other tools)."
+                                ["type"] = new List<string> { "integer", "string" },
+                                ["description"] = "MDToken.Raw — decimal uint or hex string ('0x06000001', as dnSpy shows); e.g. the method_token / caller_token returned by other tools."
                             },
                             ["assembly_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -332,8 +332,8 @@ namespace dnSpy.Extension.MCP
                                 ["description"] = "Optional. Fully-qualified parameter type names to disambiguate an overloaded target."
                             },
                             ["method_token"] = new Dictionary<string, object> {
-                                ["type"] = "integer",
-                                ["description"] = "Optional. MDToken.Raw (uint) of the target method. Takes precedence over parameter_types."
+                                ["type"] = new List<string> { "integer", "string" },
+                                ["description"] = "Optional. MDToken.Raw of the target method — decimal uint or hex string ('0x06000001', as dnSpy shows). Takes precedence over parameter_types."
                             },
                             ["cursor"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -367,8 +367,8 @@ namespace dnSpy.Extension.MCP
                                 ["description"] = "Optional. Fully-qualified parameter type names to disambiguate an overloaded method."
                             },
                             ["method_token"] = new Dictionary<string, object> {
-                                ["type"] = "integer",
-                                ["description"] = "Optional. MDToken.Raw (uint) of the method. Takes precedence over parameter_types."
+                                ["type"] = new List<string> { "integer", "string" },
+                                ["description"] = "Optional. MDToken.Raw of the method — decimal uint or hex string ('0x06000001', as dnSpy shows). Takes precedence over parameter_types."
                             },
                             ["cursor"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -407,8 +407,8 @@ namespace dnSpy.Extension.MCP
                                 ["description"] = "Optional. Disambiguate an overloaded target method."
                             },
                             ["method_token"] = new Dictionary<string, object> {
-                                ["type"] = "integer",
-                                ["description"] = "Optional. MDToken.Raw (uint) of the target method. Takes precedence over parameter_types."
+                                ["type"] = new List<string> { "integer", "string" },
+                                ["description"] = "Optional. MDToken.Raw of the target method — decimal uint or hex string ('0x06000001', as dnSpy shows). Takes precedence over parameter_types."
                             },
                             ["field_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -455,8 +455,8 @@ namespace dnSpy.Extension.MCP
                                 ["description"] = "Optional. Fully-qualified parameter type names to disambiguate an overloaded method."
                             },
                             ["method_token"] = new Dictionary<string, object> {
-                                ["type"] = "integer",
-                                ["description"] = "Optional. MDToken.Raw (uint) of the target method. Takes precedence over parameter_types."
+                                ["type"] = new List<string> { "integer", "string" },
+                                ["description"] = "Optional. MDToken.Raw of the target method — decimal uint or hex string ('0x06000001', as dnSpy shows). Takes precedence over parameter_types."
                             },
                             ["cursor"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -569,8 +569,8 @@ namespace dnSpy.Extension.MCP
                                 ["description"] = "Optional. Fully-qualified parameter type names to disambiguate an overloaded method_name."
                             },
                             ["method_token"] = new Dictionary<string, object> {
-                                ["type"] = "integer",
-                                ["description"] = "Optional. MDToken.Raw (uint) to disambiguate an overloaded method_name. Takes precedence over parameter_types."
+                                ["type"] = new List<string> { "integer", "string" },
+                                ["description"] = "Optional. MDToken.Raw to disambiguate an overloaded method_name — decimal uint or hex string ('0x06000001', as dnSpy shows). Takes precedence over parameter_types."
                             },
                             ["cursor"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -664,8 +664,8 @@ namespace dnSpy.Extension.MCP
                                 ["description"] = "Optional. Fully-qualified parameter type names to disambiguate an overloaded method."
                             },
                             ["method_token"] = new Dictionary<string, object> {
-                                ["type"] = "integer",
-                                ["description"] = "Optional. MDToken.Raw (uint) of the method. Takes precedence over parameter_types."
+                                ["type"] = new List<string> { "integer", "string" },
+                                ["description"] = "Optional. MDToken.Raw of the method — decimal uint or hex string ('0x06000001', as dnSpy shows). Takes precedence over parameter_types."
                             }
                         },
                         ["required"] = new List<string> { "assembly_name", "type_full_name", "method_name" }
@@ -791,8 +791,8 @@ namespace dnSpy.Extension.MCP
                                 ["description"] = "Optional. Fully-qualified parameter type names for overload disambiguation."
                             },
                             ["method_token"] = new Dictionary<string, object> {
-                                ["type"] = "integer",
-                                ["description"] = "Optional. MDToken.Raw from list_methods / get_type_info. Takes precedence over parameter_types."
+                                ["type"] = new List<string> { "integer", "string" },
+                                ["description"] = "Optional. MDToken.Raw from list_methods / get_type_info — decimal uint or hex string ('0x06000001', as dnSpy shows). Takes precedence over parameter_types."
                             }
                         },
                         ["required"] = new List<string> { "assembly_name", "type_full_name", "method_name" }
@@ -811,7 +811,7 @@ namespace dnSpy.Extension.MCP
                                 ["type"] = "array",
                                 ["items"] = new Dictionary<string, object> { ["type"] = "string" }
                             },
-                            ["method_token"] = new Dictionary<string, object> { ["type"] = "integer" },
+                            ["method_token"] = new Dictionary<string, object> { ["type"] = new List<string> { "integer", "string" } },
                             ["edits"] = new Dictionary<string, object> {
                                 ["type"] = "array",
                                 ["items"] = new Dictionary<string, object> {
@@ -892,8 +892,8 @@ namespace dnSpy.Extension.MCP
                                 ["description"] = "Optional. Fully-qualified parameter type names to disambiguate an overloaded method."
                             },
                             ["method_token"] = new Dictionary<string, object> {
-                                ["type"] = "integer",
-                                ["description"] = "Optional. MDToken.Raw (uint) of the method. Takes precedence over parameter_types."
+                                ["type"] = new List<string> { "integer", "string" },
+                                ["description"] = "Optional. MDToken.Raw of the method — decimal uint or hex string ('0x06000001', as dnSpy shows). Takes precedence over parameter_types."
                             }
                         },
                         ["required"] = new List<string> { "assembly_name", "type_full_name", "method_name" }
@@ -923,8 +923,8 @@ namespace dnSpy.Extension.MCP
                                 ["description"] = "Optional. Fully-qualified parameter type names to disambiguate an overloaded method."
                             },
                             ["method_token"] = new Dictionary<string, object> {
-                                ["type"] = "integer",
-                                ["description"] = "Optional. MDToken.Raw (uint) of the method. Takes precedence over parameter_types."
+                                ["type"] = new List<string> { "integer", "string" },
+                                ["description"] = "Optional. MDToken.Raw of the method — decimal uint or hex string ('0x06000001', as dnSpy shows). Takes precedence over parameter_types."
                             }
                         },
                         ["required"] = new List<string> { "assembly_name", "type_full_name", "method_name" }
@@ -943,7 +943,7 @@ namespace dnSpy.Extension.MCP
                                 ["type"] = "array",
                                 ["items"] = new Dictionary<string, object> { ["type"] = "string" }
                             },
-                            ["method_token"] = new Dictionary<string, object> { ["type"] = "integer" }
+                            ["method_token"] = new Dictionary<string, object> { ["type"] = new List<string> { "integer", "string" } }
                         },
                         ["required"] = new List<string> { "assembly_name", "type_full_name", "method_name" }
                     }
@@ -1489,7 +1489,7 @@ namespace dnSpy.Extension.MCP
             if (arguments == null)
                 throw new ArgumentException("Arguments required");
             var token = ReadOptionalUInt(arguments, "token")
-                ?? throw new ArgumentException("token is required (MDToken.Raw as uint, e.g. from find_callers / search_string_literals / list_methods)");
+                ?? throw new ArgumentException("token is required (MDToken.Raw — decimal uint or '0x' hex string, e.g. from find_callers / search_string_literals / list_methods)");
             var includeStateMachine = ReadOptionalBool(arguments, "include_state_machine") ?? true;
 
             string? assemblyName = null;
@@ -3003,15 +3003,34 @@ namespace dnSpy.Extension.MCP
                     return null;
                 if (el.ValueKind == JsonValueKind.Number && el.TryGetUInt32(out var u))
                     return u;
-                if (el.ValueKind == JsonValueKind.String && uint.TryParse(el.GetString(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var su))
+                if (el.ValueKind == JsonValueKind.String && TryParseUInt(el.GetString(), out var su))
                     return su;
-                throw new ArgumentException($"{key} must be an unsigned 32-bit integer");
+                throw new ArgumentException($"{key} must be an unsigned 32-bit integer (decimal, or hex like \"0x06000001\")");
             }
-            if (raw is string s && uint.TryParse(s, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var ps))
+            if (raw is string s && TryParseUInt(s, out var ps))
                 return ps;
             if (raw is IConvertible conv)
                 return Convert.ToUInt32(conv, System.Globalization.CultureInfo.InvariantCulture);
-            throw new ArgumentException($"{key} must be an unsigned 32-bit integer");
+            throw new ArgumentException($"{key} must be an unsigned 32-bit integer (decimal, or hex like \"0x06000001\")");
+        }
+
+        /// <summary>
+        /// Parses a uint (used for MDTokens): decimal, or hex with a 0x prefix — what dnSpy's UI
+        /// shows and what <see cref="DescribeSignature"/> emits — with a leading '#' tolerated.
+        /// </summary>
+        static bool TryParseUInt(string? s, out uint value)
+        {
+            value = 0;
+            if (s == null)
+                return false;
+            s = s.Trim();
+            if (s.Length == 0)
+                return false;
+            if (s[0] == '#')
+                s = s.Substring(1);
+            if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                return uint.TryParse(s.Substring(2), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out value);
+            return uint.TryParse(s, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out value);
         }
 
         static string? ReadOptionalString(Dictionary<string, object> args, string key)
