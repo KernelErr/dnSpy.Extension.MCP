@@ -70,11 +70,39 @@ namespace TestIL
         }
     }
 
+    // Method-rename MemberRef coverage: calls on a closed generic declaring type are encoded as
+    // MemberRef/MethodSpec rather than a direct MethodDef operand. Renaming Echo must update that
+    // MemberRef or GenericMethodCaller.Call will fail after the assembly is saved.
+    public class GenericMethodOwner<T>
+    {
+        public static T Echo(T value) => value;
+    }
+
+    public static class GenericMethodCaller
+    {
+        public static int Call() => GenericMethodOwner<int>.Echo(5);
+    }
+
+    // Unified field-rename coverage: a field on a closed generic declaring type is referenced
+    // through MemberRef, just like the generic method case above.
+    public class GenericFieldOwner<T>
+    {
+        public static int Value = 9;
+    }
+
+    public static class GenericFieldCaller
+    {
+        public static int Get() => GenericFieldOwner<string>.Value;
+    }
+
+    public delegate int ObfuscatedDelegate<T>(T input);
+
     // Property + event coverage for search_members kinds (the fixture otherwise has only
     // methods and fields). Health/Title are properties; OnDied is an event (invoked from Die
     // so the compiler-generated backing field isn't flagged unused).
     public class Members
     {
+        public int score;
         public int Health { get; set; }
         public static string Title { get; set; }
 
@@ -135,6 +163,19 @@ namespace TestIL
     // Also (review fixes): a long-backed enum returner (must emit ldc.i8) and a uint returner
     // (force_return must accept a value > int.MaxValue via its 32-bit bit pattern).
     public enum BigEnum : long { Zero = 0L, Huge = 9000000000L }
+
+    // Bulk enum-member rename coverage. The MCP tool maps desired names by these constants,
+    // not by metadata order or the current obfuscated names.
+    public enum ObfuscatedLicenseState
+    {
+        S = 0,
+        P = 1,
+        L = 2,
+        T = 3,
+        R = 4,
+        K = 5,
+        F = 6
+    }
 
     public static class Patchable
     {

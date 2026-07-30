@@ -23,7 +23,7 @@ From zero to "ask Claude about your assembly" in a few minutes:
 
 ## Features
 
-### MCP Tools (31 total)
+### MCP Tools (32 total)
 
 #### Loading
 
@@ -33,13 +33,13 @@ From zero to "ask Claude about your assembly" in a few minutes:
 
 1. **list_assemblies** — list all loaded assemblies with metadata (`name_filter` substring/wildcard to cut through hundreds of Unity framework modules)
 2. **get_assembly_info** — detailed info about a specific assembly (paginated namespaces)
-3. **list_types** — all types in an assembly or namespace; paginated (`page_size` override, `names_only` compact mode). Includes nested + compiler-generated state machines by default (`is_nested` / `is_compiler_generated` flags; `include_nested=false` for top-level only). `base_type` filters to (transitive) subclasses, e.g. `base_type='MonoBehaviour'`
-4. **get_type_info** — fields, properties, and paginated methods for a type (methods include `token` / `MDToken`). `compact` drops per-member detail; `members_filter` keeps only matching member names (e.g. `*Save*`)
-5. **list_methods** — methods of a type with `token` + `parameter_types` per entry, paginated
+3. **list_types** — all types in an assembly or namespace; paginated (`page_size` override, `names_only` compact mode). Metadata rows include the TypeDef `token`. Includes nested + compiler-generated state machines by default (`is_nested` / `is_compiler_generated` flags; `include_nested=false` for top-level only). `base_type` filters to (transitive) subclasses, e.g. `base_type='MonoBehaviour'`
+4. **get_type_info** — TypeDef `token`, type generic-parameter tokens, fields/properties/events with their metadata tokens, and paginated methods. Full method rows include MethodDef, Param, and method GenericParam tokens. `compact` drops detail; `members_filter` keeps matching names
+5. **list_methods** — methods with MethodDef tokens, parameter rows with Param tokens, method generic-parameter rows with GenericParam tokens, and `parameter_types`; pass renameable tokens to `rename_symbol_by_token`
 6. **get_type_fields** — filter fields by wildcard pattern (e.g. `*Bonus*`)
 7. **get_type_property** — detailed info about a property including getter/setter
-8. **search_types** — wildcard / substring type search; `assembly_name` to scope to one assembly, `names_only` / `page_size` to control output. Matches nested compiler-generated types too (e.g. `*<Awake>d__*`)
-9. **search_members** — wildcard / substring search for *members* (methods / fields / properties / events) by name across all assemblies (or one via `assembly_name`); `kinds` filters by member kind. The member-level counterpart of `search_types` (together they are dnSpy's Search Assemblies / Ctrl+Shift+K). Use it when you have a bare member name from decompiled code but don't know its declaring type: each hit carries `declaring_type`, `member_kind`, full `signature`, `token` (`MDToken`), `is_static` / `is_public` — feed `token` straight to `decompile_by_token`, or `declaring_type` + name to `find_callers` / `find_references`
+8. **search_types** — wildcard / substring type search; metadata rows include the TypeDef `token`; `assembly_name` scopes to one assembly, while `names_only` / `page_size` control output. Matches nested compiler-generated types too (e.g. `*<Awake>d__*`)
+9. **search_members** — wildcard / substring search for *members* (methods / fields / properties / events) by name across all assemblies (or one via `assembly_name`); `kinds` filters by member kind. The member-level counterpart of `search_types` (together they are dnSpy's Search Assemblies / Ctrl+Shift+K). Each hit carries `declaring_type`, `member_kind`, full `signature`, `token` (`MDToken`), `is_static` / `is_public` — feed renameable tokens to `rename_symbol_by_token`
 10. **find_path_to_type** — BFS over fields/properties to connect two types
 11. **decompile_method** — decompile a method to C# (accepts `parameter_types` / `method_token` to disambiguate overloads). Nested types are addressable (`Outer/Inner`, `.`/`+`/`/` all accepted), so you can decompile a state machine's `MoveNext` directly. For async/iterator kickoffs, when the decompiler can't inline the state machine back into `await`/`yield` (common on Unity output) the raw `MoveNext` body is appended automatically (`include_state_machine=false` to opt out)
 12. **decompile_type** — decompile a whole type to C# (all members) by name — the "click the class and read its source" view, in one call. Nested types addressable. For very large types prefer `get_type_info` (compact) or `decompile_method`
@@ -60,14 +60,15 @@ From zero to "ask Claude about your assembly" in a few minutes:
 2. **list_string_constants** — list every `ldstr` in a type (incl. nested types) or a single method
 3. **search_constants** — find where a numeric constant is used (`ldc.i4*` / `ldc.i8` / `ldc.r4` / `ldc.r8`) — the number counterpart of `search_string_literals` (magic numbers, item IDs, thresholds). Integer query matches integer constants; a decimal-point query matches floats. Scope with `assembly_name`
 
-#### IL viewing & editing
+#### IL & metadata viewing/editing
 
 1. **get_method_il** — instructions (index, offset, opcode, operand) + locals + exception handlers + body flags
 2. **patch_method_il** — ordered `replace` / `insert` / `delete` / `set_init_locals` edits; snapshot-on-first-patch
 3. **force_return** — replace a body with `return <value>` (true/false, a number, null, or `default`) without hand-writing IL — the common "make `IsPremium()` return true" patch. Void methods become a no-op
 4. **nop_method** — empty a method out (void → bare `ret`; value-returning → return default). For neutralizing a tick/telemetry/anti-cheat call
 5. **revert_method_il** — restore the pre-patch body shape (also undoes force_return / nop_method)
-6. **save_assembly** — write the module to disk (timestamped backup on overwrite, `NativeWrite` preserves native stubs / Win32 resources / delay-loaded imports, GAC refused)
+6. **rename_symbol_by_token** — unified metadata rename entry point. `target_kind` selects `type` / `class` / `enum` / `interface` / `struct` / `delegate`, `method`, `field`, `enum_member`, `enum_members`, `property`, `event`, `parameter`, or `generic_parameter`. Singular targets use `new_name`; `enum_members` uses the complete value-mapped `members` array. Matching same-module references and open decompiler tabs are refreshed where applicable
+7. **save_assembly** — write the module to disk (timestamped backup on overwrite, `NativeWrite` preserves native stubs / Win32 resources / delay-loaded imports, GAC refused)
 
 #### Codegen
 
@@ -365,6 +366,7 @@ dnSpy.Extension.MCP/
 ├── McpProtocol.cs          JSON-RPC 2.0 / MCP DTOs
 ├── McpTools.cs             Analysis tools + MEF export + dispatch (sealed partial)
 ├── McpTools.IL.cs          IL view/patch/revert/save + operand renderer & parser
+├── McpTools.Rename.cs      TypeDef-token class/enum rename + TypeRef/tree synchronization
 ├── McpSettings.cs          Settings view-model + persistence + log (disk log in Debug only)
 ├── McpSettingsPage.cs      IAppSettingsPageProvider for dnSpy settings dialog
 ├── BepInExResources.cs     Embedded BepInEx docs (6 resources)

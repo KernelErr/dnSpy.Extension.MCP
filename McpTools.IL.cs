@@ -78,8 +78,19 @@ namespace dnSpy.Extension.MCP
                         ? new List<string>()
                         : m.MethodSig.Params.Select(t => t?.FullName ?? "?").ToList(),
                     parameters = m.Parameters
-                        .Where(p => !p.IsHiddenThisParameter)
-                        .Select(p => new { name = p.Name, type = p.Type?.FullName ?? "?" })
+                        .Where(p => p.IsNormalMethodParameter)
+                        .Select(p => new {
+                            name = p.Name,
+                            type = p.Type?.FullName ?? "?",
+                            token = p.ParamDef?.MDToken.Raw
+                        })
+                        .ToList(),
+                    generic_parameters = m.GenericParameters
+                        .Select(p => new {
+                            name = p.Name.String,
+                            token = p.MDToken.Raw,
+                            number = p.Number
+                        })
                         .ToList(),
                     is_static = m.IsStatic,
                     is_virtual = m.IsVirtual,

@@ -159,7 +159,7 @@ Set-McpPortInSettings $Port
 # Quote the fixture path: Start-Process does not auto-quote -ArgumentList entries, so a
 # path containing spaces (e.g. C:\Users\Rui Li\...) would reach dnSpy split at the space
 # and the fixture would silently fail to load.
-$dnSpyProc = Start-Process -FilePath $dnSpyExeFull -ArgumentList "`"$testDll`"" -PassThru
+$dnSpyProc = Start-Process -FilePath $dnSpyExeFull -ArgumentList "`"$testDll`"" -WindowStyle Hidden -PassThru
 
 # Poll for /health on the configured port with +N fallback (McpServer's FindAvailablePort tries up to 20).
 $found = $false
@@ -856,6 +856,226 @@ try
     # by declaring_type — mirrors how a real caller disambiguates a global member-search hit.
     $smHealth = @($sm.items | Where-Object { $_.member_kind -eq 'field' -and $_.declaring_type -eq 'TestIL.Il2Cpp.DumpedType' })[0]
     Assert ($smHealth.offset -eq '0x330' -and $smHealth.offset_source -eq 'il2cpp' -and $smHealth.il2cpp_token -eq '0x4000B02') "search_members field hit: offset/offset_source/il2cpp_token" "off=$($smHealth.offset) tok=$($smHealth.il2cpp_token)"
+
+    # ----- type metadata rename by TypeDef token -----
+    Write-Host ""
+    Write-Host "[RT-1] type discovery exposes TypeDef tokens"
+    $decoratedInfo = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name='TestIL.Decorated'; compact=$true }
+    $decoratedToken = [uint32]$decoratedInfo.Token
+    Assert (($decoratedToken -band 0xFF000000) -eq 0x02000000) "get_type_info exposes a TypeDef token" "token=$decoratedToken"
+    $decoratedSearch = Rpc 'search_types' @{ query='TestIL.Decorated'; assembly_name='TestIL' }
+    Assert ([uint32]$decoratedSearch.items[0].Token -eq $decoratedToken) "search_types exposes the same TypeDef token"
+    $decoratedList = Rpc 'list_types' @{ assembly_name='TestIL'; namespace='TestIL'; page_size=200 }
+    $decoratedListHit = $decoratedList.items | Where-Object { $_.FullName -eq 'TestIL.Decorated' } | Select-Object -First 1
+    Assert ([uint32]$decoratedListHit.Token -eq $decoratedToken) "list_types exposes the same TypeDef token"
+
+    Write-Host ""
+    Write-Host "[RT-2] rename_symbol_by_token renames a class (hex token) in memory"
+    $decoratedHex = '0x{0:X8}' -f $decoratedToken
+    $renamedClass = Rpc 'rename_symbol_by_token' @{ target_kind='class'; token=$decoratedHex; new_name='DecoratedRenamed'; assembly_name='TestIL' }
+    Assert ($renamedClass.changed -eq $true -and $renamedClass.target_kind -eq 'class') "class rename reports changed + class kind"
+    Assert ($renamedClass.old_full_name -eq 'TestIL.Decorated' -and $renamedClass.new_full_name -eq 'TestIL.DecoratedRenamed') "class rename reports old/new full names"
+    $renamedClassInfo = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name='TestIL.DecoratedRenamed'; compact=$true }
+    Assert ([uint32]$renamedClassInfo.Token -eq $decoratedToken) "renamed class is immediately addressable and keeps its token"
+    $classNoOp = Rpc 'rename_symbol_by_token' @{ target_kind='class'; token=$decoratedToken; new_name='DecoratedRenamed'; assembly_name='TestIL' }
+    Assert ($classNoOp.changed -eq $false) "renaming to the current name is an explicit no-op"
+
+    Write-Host ""
+    Write-Host "[RT-3] unified type rename handles enum and rejects kind/token mismatches"
+    $enumInfo = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name='TestIL.BigEnum'; compact=$true }
+    $enumToken = [uint32]$enumInfo.Token
+    $renamedEnum = Rpc 'rename_symbol_by_token' @{ target_kind='enum'; token=$enumToken; new_name='BigEnumRenamed'; assembly_name='TestIL' }
+    Assert ($renamedEnum.changed -eq $true -and $renamedEnum.target_kind -eq 'enum') "enum rename reports changed + enum kind"
+    $methodTokenError = $null
+    try { Rpc 'rename_symbol_by_token' @{ target_kind='class'; token=$addOneTok; new_name='NotAType'; assembly_name='TestIL' } | Out-Null } catch { $methodTokenError = $_.Exception.Message }
+    Assert ($methodTokenError -and ($methodTokenError -match 'not a TypeDef token')) "method token is rejected with TypeDef guidance" "got: $methodTokenError"
+    $structInfo = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name='TestIL.ExplicitLayout'; compact=$true }
+    $structError = $null
+    try { Rpc 'rename_symbol_by_token' @{ target_kind='class'; token=$structInfo.Token; new_name='NoStructRename'; assembly_name='TestIL' } | Out-Null } catch { $structError = $_.Exception.Message }
+    Assert ($structError -and ($structError -match 'does not match.*struct')) "target_kind=class rejects a struct token" "got: $structError"
+
+    Write-Host ""
+    Write-Host "[RT-4] unified enum_members maps names by constant value"
+    $obfuscatedEnumInfo = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name='TestIL.ObfuscatedLicenseState'; compact=$false }
+    $obfuscatedEnumToken = [uint32]$obfuscatedEnumInfo.Token
+    $literalConstants = @($obfuscatedEnumInfo.Fields | Where-Object { $_.IsLiteral } | ForEach-Object { [int]$_.Constant })
+    Assert (($literalConstants -join ',') -eq '0,1,2,3,4,5,6') "get_type_info exposes enum constant values" "got=$($literalConstants -join ',')"
+    $licenseMembers = @(
+        @{ name='EvaluationProfessional'; value=0 },
+        @{ name='EvaluationStandard'; value=1 },
+        @{ name='EvaluationExpired'; value=2 },
+        @{ name='RegisteredProfessional'; value=3 },
+        @{ name='RegisteredStandard'; value=4 },
+        @{ name='EvaluationEnterprise'; value=5 },
+        @{ name='RegisteredEnterprise'; value=6 }
+    )
+    $renamedMembers = Rpc 'rename_symbol_by_token' @{
+        assembly_name='TestIL'; target_kind='enum_members'; token=$obfuscatedEnumToken; members=$licenseMembers
+    }
+    Assert ($renamedMembers.changed -eq $true -and $renamedMembers.changed_count -eq 7) "all seven enum members renamed"
+    Assert (($renamedMembers.members | Where-Object { $_.value -eq 0 }).new_name -eq 'EvaluationProfessional') "value 0 maps to EvaluationProfessional"
+    Assert (($renamedMembers.members | Where-Object { $_.value -eq 6 }).new_name -eq 'RegisteredEnterprise') "value 6 maps to RegisteredEnterprise"
+    $renamedMembersSource = RpcText 'decompile_by_token' @{ assembly_name='TestIL'; token=$obfuscatedEnumToken }
+    Assert (($renamedMembersSource -match 'EvaluationProfessional') -and ($renamedMembersSource -match 'RegisteredEnterprise')) "decompile_by_token immediately shows renamed enum members"
+    $incompleteMembersError = $null
+    try {
+        Rpc 'rename_symbol_by_token' @{
+            assembly_name='TestIL'; target_kind='enum_members'; token=$obfuscatedEnumToken
+            members=@(@{ name='OnlyOne'; value=0 })
+        } | Out-Null
+    } catch { $incompleteMembersError = $_.Exception.Message }
+    Assert ($incompleteMembersError -and ($incompleteMembersError -match 'expected 7, got 1')) "incomplete enum mapping is rejected before mutation" "got: $incompleteMembersError"
+
+    Write-Host ""
+    Write-Host "[RT-5] unified method rename handles MethodDef and rejects non-method tokens"
+    $renamedMethod = Rpc 'rename_symbol_by_token' @{
+        assembly_name='TestIL'; target_kind='method'; token=('0x{0:X8}' -f $addOneTok); new_name='Increment'
+    }
+    Assert ($renamedMethod.changed -eq $true -and $renamedMethod.old_name -eq 'AddOne' -and $renamedMethod.new_name -eq 'Increment') "method rename reports changed + old/new names"
+    Assert ([uint32]$renamedMethod.token -eq [uint32]$addOneTok -and $renamedMethod.declaring_type -eq 'TestIL.Simple') "method rename preserves token and reports declaring type"
+    $renamedMethodSource = RpcText 'decompile_by_token' @{ assembly_name='TestIL'; token=$addOneTok }
+    Assert ($renamedMethodSource -match 'Increment\s*\(') "decompile_by_token immediately shows renamed method"
+    $methodNoOp = Rpc 'rename_symbol_by_token' @{ assembly_name='TestIL'; target_kind='method'; token=$addOneTok; new_name='Increment' }
+    Assert ($methodNoOp.changed -eq $false) "renaming a method to its current name is an explicit no-op"
+    $typeTokenError = $null
+    try { Rpc 'rename_symbol_by_token' @{ assembly_name='TestIL'; target_kind='method'; token=$decoratedToken; new_name='NotAMethod' } | Out-Null } catch { $typeTokenError = $_.Exception.Message }
+    Assert ($typeTokenError -and ($typeTokenError -match 'not a MethodDef token')) "type token is rejected with MethodDef guidance" "got: $typeTokenError"
+    $genericTypeSearch = Rpc 'search_types' @{ assembly_name='TestIL'; query='GenericMethodOwner' }
+    $genericTypeName = $genericTypeSearch.items[0].FullName
+    $genericTypeInfo = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name=$genericTypeName; compact=$false }
+    $echoMethod = $genericTypeInfo.Methods | Where-Object { $_.Name -eq 'Echo' } | Select-Object -First 1
+    $genericRename = Rpc 'rename_symbol_by_token' @{
+        assembly_name='TestIL'; target_kind='method'; token=$echoMethod.Token; new_name='Identity'
+    }
+    Assert ($genericRename.changed -eq $true -and $genericRename.updated_member_references -ge 1) "generic method rename updates its same-module MemberRef" "refs=$($genericRename.updated_member_references)"
+    $genericCallerInfo = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name='TestIL.GenericMethodCaller'; compact=$false }
+    $genericCallerToken = ($genericCallerInfo.Methods | Where-Object { $_.Name -eq 'Call' } | Select-Object -First 1).Token
+    $genericCallerSource = RpcText 'decompile_by_token' @{ assembly_name='TestIL'; token=$genericCallerToken }
+    Assert ($genericCallerSource -match '\.Identity\s*\(') "open metadata immediately renders the renamed generic call"
+
+    Write-Host ""
+    Write-Host "[RT-6] rename_symbol_by_token covers the remaining source-level metadata symbols"
+    $fixtureReflection = [Reflection.Assembly]::LoadFile($testDll)
+    $membersReflection = $fixtureReflection.GetType('TestIL.Members')
+    $greetReflection = $fixtureReflection.GetType('TestIL.Simple').GetMethod('Greet')
+    $genericOwnerReflection = $fixtureReflection.GetType('TestIL.GenericMethodOwner`1')
+    $genericFieldReflection = $fixtureReflection.GetType('TestIL.GenericFieldOwner`1').GetField('Value')
+    $bigEnumZeroReflection = $fixtureReflection.GetType('TestIL.BigEnum').GetField('Zero')
+    $membersMetadata = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name='TestIL.Members'; compact=$false }
+    $healthMetadata = $membersMetadata.Properties | Where-Object { $_.Name -eq 'Health' } | Select-Object -First 1
+    $eventMetadata = $membersMetadata.Events | Where-Object { $_.Name -eq 'OnDied' } | Select-Object -First 1
+    $simpleMethodsMetadata = Rpc 'list_methods' @{ assembly_name='TestIL'; type_full_name='TestIL.Simple'; page_size=100 }
+    $greetMetadata = $simpleMethodsMetadata.items | Where-Object { $_.name -eq 'Greet' } | Select-Object -First 1
+    $genericOwnerMetadata = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name='TestIL.GenericMethodOwner`1'; compact=$false }
+    $genericFieldMetadata = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name='TestIL.GenericFieldOwner`1'; compact=$false }
+    $valueFieldMetadata = $genericFieldMetadata.Fields | Where-Object { $_.Name -eq 'Value' } | Select-Object -First 1
+    Assert ([uint32]$healthMetadata.Token -eq [uint32]$membersReflection.GetProperty('Health').MetadataToken) "get_type_info exposes Property token"
+    Assert ([uint32]$eventMetadata.Token -eq [uint32]$membersReflection.GetEvent('OnDied').MetadataToken) "get_type_info exposes Event token"
+    Assert ([uint32]$greetMetadata.parameters[0].token -eq [uint32]$greetReflection.GetParameters()[0].MetadataToken) "list_methods exposes Param token"
+    Assert ([uint32]$genericOwnerMetadata.GenericParameters[0].Token -eq [uint32]$genericOwnerReflection.GetGenericArguments()[0].MetadataToken) "get_type_info exposes GenericParam token"
+    Assert ([uint32]$valueFieldMetadata.Token -eq [uint32]$genericFieldReflection.MetadataToken) "get_type_info exposes FieldDef token"
+
+    $unifiedInterface = Rpc 'rename_symbol_by_token' @{
+        assembly_name='TestIL'; target_kind='interface'
+        token=$fixtureReflection.GetType('TestIL.IDamageable').MetadataToken; new_name='IDamageTarget'
+    }
+    Assert ($unifiedInterface.changed -eq $true -and $unifiedInterface.target_kind -eq 'interface') "unified tool renames an interface"
+    $unifiedStruct = Rpc 'rename_symbol_by_token' @{
+        assembly_name='TestIL'; target_kind='struct'
+        token=$fixtureReflection.GetType('TestIL.ExplicitLayout').MetadataToken; new_name='ExplicitLayoutRenamed'
+    }
+    Assert ($unifiedStruct.changed -eq $true -and $unifiedStruct.target_kind -eq 'struct') "unified tool renames a struct"
+    $unifiedDelegate = Rpc 'rename_symbol_by_token' @{
+        assembly_name='TestIL'; target_kind='delegate'
+        token=$fixtureReflection.GetType('TestIL.ObfuscatedDelegate`1').MetadataToken; new_name='ValueConverter`1'
+    }
+    Assert ($unifiedDelegate.changed -eq $true -and $unifiedDelegate.target_kind -eq 'delegate') "unified tool renames a delegate"
+    $unifiedClass = Rpc 'rename_symbol_by_token' @{
+        assembly_name='TestIL'; target_kind='class'
+        token=$fixtureReflection.GetType('TestIL.Collider').MetadataToken; new_name='PhysicsCollider'
+    }
+    Assert ($unifiedClass.changed -eq $true -and $unifiedClass.target_kind -eq 'class') "unified tool renames a class"
+
+    $unifiedField = Rpc 'rename_symbol_by_token' @{
+        assembly_name='TestIL'; target_kind='field'
+        token=$valueFieldMetadata.Token; new_name='StoredValue'
+    }
+    Assert ($unifiedField.changed -eq $true -and $unifiedField.updated_member_references -ge 1) "unified field rename updates a generic MemberRef" "refs=$($unifiedField.updated_member_references)"
+    $unifiedEnumMember = Rpc 'rename_symbol_by_token' @{
+        assembly_name='TestIL'; target_kind='enum_member'
+        token=$bigEnumZeroReflection.MetadataToken; new_name='None'
+    }
+    Assert ($unifiedEnumMember.changed -eq $true -and $unifiedEnumMember.target_kind -eq 'enum_member') "unified tool renames one enum member by FieldDef token"
+    $unifiedProperty = Rpc 'rename_symbol_by_token' @{
+        assembly_name='TestIL'; target_kind='property'
+        token=$healthMetadata.Token; new_name='HitPoints'
+    }
+    Assert ($unifiedProperty.changed -eq $true -and $unifiedProperty.target_kind -eq 'property') "unified tool renames a property"
+    $unifiedEvent = Rpc 'rename_symbol_by_token' @{
+        assembly_name='TestIL'; target_kind='event'
+        token=$eventMetadata.Token; new_name='Died'
+    }
+    Assert ($unifiedEvent.changed -eq $true -and $unifiedEvent.target_kind -eq 'event') "unified tool renames an event"
+    $unifiedParameter = Rpc 'rename_symbol_by_token' @{
+        assembly_name='TestIL'; target_kind='parameter'
+        token=$greetMetadata.parameters[0].token; new_name='personName'
+    }
+    Assert ($unifiedParameter.changed -eq $true -and $unifiedParameter.target_kind -eq 'parameter') "unified tool renames a parameter"
+    $unifiedGenericParameter = Rpc 'rename_symbol_by_token' @{
+        assembly_name='TestIL'; target_kind='generic_parameter'
+        token=$genericOwnerMetadata.GenericParameters[0].Token; new_name='TItem'
+    }
+    Assert ($unifiedGenericParameter.changed -eq $true -and $unifiedGenericParameter.target_kind -eq 'generic_parameter') "unified tool renames a generic parameter"
+    $unifiedMethod = Rpc 'rename_symbol_by_token' @{
+        assembly_name='TestIL'; target_kind='method'
+        token=$greetReflection.MetadataToken; new_name='FormatGreeting'
+    }
+    Assert ($unifiedMethod.changed -eq $true -and $unifiedMethod.new_name -eq 'FormatGreeting') "unified tool delegates MethodDef rename"
+    $unifiedEnumBatch = Rpc 'rename_symbol_by_token' @{
+        assembly_name='TestIL'; target_kind='enum_members'
+        token=$obfuscatedEnumToken; members=$licenseMembers
+    }
+    Assert ($unifiedEnumBatch.changed -eq $false) "unified enum_members route accepts the complete mapping and is a no-op when already applied"
+
+    $genericFieldCallerSource = RpcText 'decompile_type' @{
+        assembly_name='TestIL'; type_full_name='TestIL.GenericFieldCaller'
+    }
+    Assert ($genericFieldCallerSource -match '\.StoredValue') "generic field caller immediately renders the renamed MemberRef"
+    $membersSource = RpcText 'decompile_type' @{ assembly_name='TestIL'; type_full_name='TestIL.Members' }
+    Assert (($membersSource -match 'HitPoints') -and ($membersSource -match 'event\s+Action\s+Died')) "property and event names refresh in decompiled source"
+    $simpleSourceAfterUnified = RpcText 'decompile_type' @{ assembly_name='TestIL'; type_full_name='TestIL.Simple' }
+    Assert ($simpleSourceAfterUnified -match 'FormatGreeting\s*\(\s*string\s+personName\s*\)') "method and parameter names refresh together"
+    $genericOwnerSource = RpcText 'decompile_type' @{ assembly_name='TestIL'; type_full_name='TestIL.GenericMethodOwner`1' }
+    Assert ($genericOwnerSource -match 'GenericMethodOwner<TItem>') "generic parameter name refreshes in decompiled source"
+    $kindMismatchError = $null
+    try {
+        Rpc 'rename_symbol_by_token' @{
+            assembly_name='TestIL'; target_kind='event'
+            token=$membersReflection.GetProperty('Title').MetadataToken; new_name='WrongKind'
+        } | Out-Null
+    } catch { $kindMismatchError = $_.Exception.Message }
+    Assert ($kindMismatchError -and ($kindMismatchError -match 'not a Event token')) "target_kind/token-table mismatch is rejected before mutation" "got: $kindMismatchError"
+
+    Write-Host ""
+    Write-Host "[RT-7] save_assembly persists all renamed metadata and dependent signatures"
+    $renamedPath = Join-Path $binFixture 'TestIL.renamed.dll'
+    if (Test-Path $renamedPath) { Remove-Item $renamedPath -Force }
+    Rpc 'save_assembly' @{ assembly_name='TestIL'; output_path=$renamedPath } | Out-Null
+    $renameProbe = & powershell -NoProfile -Command "`$a=[Reflection.Assembly]::LoadFile('$renamedPath'); (`$a.GetType('TestIL.DecoratedRenamed') -ne `$null); `$a.GetType('TestIL.BigEnumRenamed').IsEnum; `$a.GetType('TestIL.Patchable').GetMethod('GetBigEnum').ReturnType.FullName; [string]::Join(',', [Enum]::GetNames(`$a.GetType('TestIL.ObfuscatedLicenseState'))); (`$a.GetType('TestIL.Simple').GetMethod('Increment') -ne `$null); `$a.GetType('TestIL.Refs').GetMethod('CallsAddOne').Invoke(`$null, @()); `$a.GetType('TestIL.GenericMethodCaller').GetMethod('Call').Invoke(`$null, @())"
+    Assert ($renameProbe[0] -eq 'True') "renamed class exists in saved assembly" "probe=$($renameProbe -join ',')"
+    Assert ($renameProbe[1] -eq 'True') "renamed enum exists and remains an enum in saved assembly" "probe=$($renameProbe -join ',')"
+    Assert ($renameProbe[2] -eq 'TestIL.BigEnumRenamed') "dependent return signature resolves to renamed enum" "got=$($renameProbe[2])"
+    Assert ($renameProbe[3] -eq 'EvaluationProfessional,EvaluationStandard,EvaluationExpired,RegisteredProfessional,RegisteredStandard,EvaluationEnterprise,RegisteredEnterprise') "renamed enum members persist in value order" "got=$($renameProbe[3])"
+    Assert ($renameProbe[4] -eq 'True') "renamed method exists in saved assembly" "probe=$($renameProbe -join ',')"
+    Assert ($renameProbe[5] -eq '6') "existing MethodDef caller still invokes renamed method" "got=$($renameProbe[5])"
+    Assert ($renameProbe[6] -eq '5') "saved generic caller resolves the renamed MemberRef" "got=$($renameProbe[6])"
+    $symbolProbeJson = & powershell -NoProfile -Command "`$a=[Reflection.Assembly]::LoadFile('$renamedPath'); [pscustomobject]@{ Interface=(`$null -ne `$a.GetType('TestIL.IDamageTarget')); Struct=(`$null -ne `$a.GetType('TestIL.ExplicitLayoutRenamed')); Delegate=(`$null -ne `$a.GetType('TestIL.ValueConverter``1')); Class=(`$null -ne `$a.GetType('TestIL.PhysicsCollider')); Field=(`$null -ne `$a.GetType('TestIL.GenericFieldOwner``1').GetField('StoredValue')); FieldCaller=`$a.GetType('TestIL.GenericFieldCaller').GetMethod('Get').Invoke(`$null,@()); Property=(`$null -ne `$a.GetType('TestIL.Members').GetProperty('HitPoints')); Event=(`$null -ne `$a.GetType('TestIL.Members').GetEvent('Died')); Method=(`$null -ne `$a.GetType('TestIL.Simple').GetMethod('FormatGreeting')); Parameter=`$a.GetType('TestIL.Simple').GetMethod('FormatGreeting').GetParameters()[0].Name; GenericParameter=`$a.GetType('TestIL.GenericMethodOwner``1').GetGenericArguments()[0].Name; EnumMember=([Enum]::GetNames(`$a.GetType('TestIL.BigEnumRenamed')) -contains 'None') } | ConvertTo-Json -Compress"
+    $symbolProbe = $symbolProbeJson | ConvertFrom-Json
+    Assert ($symbolProbe.Interface -and $symbolProbe.Struct -and $symbolProbe.Delegate -and $symbolProbe.Class) "saved assembly contains renamed interface/struct/delegate/class"
+    Assert ($symbolProbe.Field -and $symbolProbe.FieldCaller -eq 9) "saved generic field rename preserves executable caller" "field=$($symbolProbe.Field) result=$($symbolProbe.FieldCaller)"
+    Assert ($symbolProbe.Property -and $symbolProbe.Event) "saved assembly exposes renamed property and event"
+    Assert ($symbolProbe.Method -and $symbolProbe.Parameter -eq 'personName') "saved assembly exposes renamed method and parameter"
+    Assert ($symbolProbe.GenericParameter -eq 'TItem' -and $symbolProbe.EnumMember) "saved assembly exposes renamed generic parameter and enum member"
 }
 finally
 {

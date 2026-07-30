@@ -23,7 +23,7 @@ English: see [README.md](README.md).
 
 ## 功能
 
-### MCP 工具（共 31 个）
+### MCP 工具（共 32 个）
 
 #### 加载
 
@@ -33,13 +33,13 @@ English: see [README.md](README.md).
 
 1. **list_assemblies** — 列出所有已加载的程序集及其元数据（`name_filter` 子串/通配,从几百个 Unity 框架模块里筛出目标）
 2. **get_assembly_info** — 查看指定程序集的详细信息（命名空间分页）
-3. **list_types** — 列出程序集或命名空间下的所有类型；分页（`page_size` 可调,`names_only` 紧凑模式）。默认包含嵌套类型及编译器生成的状态机（带 `is_nested` / `is_compiler_generated` 标志；`include_nested=false` 仅顶层）。`base_type` 过滤出（传递的）子类,如 `base_type='MonoBehaviour'`
-4. **get_type_info** — 获取类型的字段、属性及分页的方法（方法条目含 `token` / `MDToken`）。`compact` 去掉逐成员细节；`members_filter` 只保留名字匹配的成员（如 `*Save*`）
-5. **list_methods** — 列出类型的全部方法，每条含 `token` 与 `parameter_types`，分页
+3. **list_types** — 列出程序集或命名空间下的所有类型；分页（`page_size` 可调,`names_only` 紧凑模式）。元数据条目包含 TypeDef `token`。默认包含嵌套类型及编译器生成的状态机（带 `is_nested` / `is_compiler_generated` 标志；`include_nested=false` 仅顶层）。`base_type` 过滤出（传递的）子类,如 `base_type='MonoBehaviour'`
+4. **get_type_info** — 返回 TypeDef `token`、类型泛型参数 Token、带 Token 的字段/属性/事件，以及分页的方法；完整方法条目还含 MethodDef、Param 和方法 GenericParam Token。`compact` 可精简，`members_filter` 可按名称过滤
+5. **list_methods** — 返回方法的 MethodDef Token、参数的 Param Token、方法泛型参数的 GenericParam Token 及 `parameter_types`；可把可重命名 Token 直接传给 `rename_symbol_by_token`
 6. **get_type_fields** — 按通配符匹配类型的字段（如 `*Bonus*`）
 7. **get_type_property** — 获取属性的详细信息，包含 get/set 访问器
-8. **search_types** — 按通配符或子串搜索类型；`assembly_name` 限定单个程序集,`names_only` / `page_size` 控制输出。也能匹配嵌套的编译器生成类型（如 `*<Awake>d__*`）
-9. **search_members** — 按通配符或子串搜索**成员**（方法 / 字段 / 属性 / 事件），跨所有程序集（或用 `assembly_name` 限定单个）；`kinds` 按成员种类过滤。它是 `search_types` 的成员级对应物（两者合起来即 dnSpy 的搜索程序集 / Ctrl+Shift+K）。当你在反编译里只看到一个成员名、却不知它属于哪个类型时用它：每条命中含 `declaring_type`、`member_kind`、完整 `signature`、`token`（`MDToken`）、`is_static` / `is_public`——把 `token` 直接喂给 `decompile_by_token`，或把 `declaring_type` + 名字喂给 `find_callers` / `find_references`
+8. **search_types** — 按通配符或子串搜索类型；元数据条目包含 TypeDef `token`；`assembly_name` 限定单个程序集,`names_only` / `page_size` 控制输出。也能匹配嵌套的编译器生成类型（如 `*<Awake>d__*`）
+9. **search_members** — 按通配符或子串搜索**成员**（方法 / 字段 / 属性 / 事件），跨所有程序集（或用 `assembly_name` 限定）；每条命中含 `declaring_type`、`member_kind`、完整 `signature`、`token`（`MDToken`）、`is_static` / `is_public`，可把可重命名 Token 直接传给 `rename_symbol_by_token`
 10. **find_path_to_type** — 基于字段/属性对两个类型做 BFS 路径搜索
 11. **decompile_method** — 将方法反编译为 C#（可通过 `parameter_types` / `method_token` 精确区分重载）。嵌套类型可寻址（`Outer/Inner`，`.`/`+`/`/` 都接受），因此可直接反编译状态机的 `MoveNext`。对 async/iterator 的 kickoff，当反编译器无法把状态机内联回 `await`/`yield` 时（Unity 产物常见），会自动把原始 `MoveNext` 体附在后面（`include_state_machine=false` 可关闭）
 12. **decompile_type** — 按名字反编译**整个类型**（全部成员）为 C#——"点开类看完整源码"的视图，一次拿全。嵌套类型可寻址。类型很大时建议改用 `get_type_info`（compact）或 `decompile_method`
@@ -60,14 +60,15 @@ English: see [README.md](README.md).
 2. **list_string_constants** — 列出某个类型（含嵌套类型）或单个方法内的所有 `ldstr` 字符串字面量
 3. **search_constants** — 查找数值常量被用在哪里（`ldc.i4*` / `ldc.i8` / `ldc.r4` / `ldc.r8`）——`search_string_literals` 的数字版（魔法数、物品 ID、阈值）。整数查询匹配整数常量，带小数点的查询匹配浮点常量。用 `assembly_name` 限定范围
 
-#### IL 查看与编辑
+#### IL 与元数据查看/编辑
 
 1. **get_method_il** — 方法 IL 指令（index、offset、opcode、operand）+ 局部变量 + 异常处理块 + 方法体标志
 2. **patch_method_il** — 按序执行 `replace` / `insert` / `delete` / `set_init_locals` 编辑；首次补丁会自动快照
 3. **force_return** — 不用手写 IL，直接把方法体改成 `return <值>`（true/false、数字、null 或 `default`）——最常见的"让 `IsPremium()` 返回 true"补丁。void 方法会变成空操作
 4. **nop_method** — 清空方法（void → 单个 `ret`；有返回值 → 返回默认值）。用于让某个 tick/遥测/反作弊调用失效
 5. **revert_method_il** — 回滚到补丁前的方法体（force_return / nop_method 也能回滚）
-6. **save_assembly** — 将模块写回磁盘（覆盖原文件时会自动生成带时间戳的备份，`NativeWrite` 保留本机 stub / Win32 资源 / 延迟加载导入，GAC 路径被拒绝）
+6. **rename_symbol_by_token** — 统一的元数据重命名入口。用 `target_kind` 选择 `type` / `class` / `enum` / `interface` / `struct` / `delegate`、`method`、`field`、`enum_member`、`enum_members`、`property`、`event`、`parameter` 或 `generic_parameter`。单个符号传 `new_name`；批量枚举成员传完整的按值映射 `members`。适用时会同步当前模块引用并刷新已打开的反编译标签页
+7. **save_assembly** — 将模块写回磁盘（覆盖原文件时会自动生成带时间戳的备份，`NativeWrite` 保留本机 stub / Win32 资源 / 延迟加载导入，GAC 路径被拒绝）
 
 #### 代码生成
 
@@ -365,6 +366,7 @@ dnSpy.Extension.MCP/
 ├── McpProtocol.cs          JSON-RPC 2.0 / MCP 数据模型
 ├── McpTools.cs             分析类工具 + MEF 导出 + 请求分派（sealed partial）
 ├── McpTools.IL.cs          IL 查看/补丁/回滚/保存 + 操作数渲染器与解析器
+├── McpTools.Rename.cs      按 TypeDef token 重命名类/枚举 + TypeRef/类型树同步
 ├── McpSettings.cs          设置视图模型 + 持久化 + 日志（磁盘日志仅 Debug 构建）
 ├── McpSettingsPage.cs      实现 IAppSettingsPageProvider，接入 dnSpy 设置界面
 ├── BepInExResources.cs     内嵌的 BepInEx 文档（6 份资源）

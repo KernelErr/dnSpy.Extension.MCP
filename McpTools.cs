@@ -7,6 +7,7 @@ using System.Text.Json;
 using dnlib.DotNet;
 using dnSpy.Contracts.Decompiler;
 using dnSpy.Contracts.Documents;
+using dnSpy.Contracts.Documents.Tabs;
 using dnSpy.Contracts.Documents.Tabs.DocViewer;
 using dnSpy.Contracts.Documents.TreeView;
 using dnSpy.Contracts.Text;
@@ -21,6 +22,7 @@ namespace dnSpy.Extension.MCP
     sealed partial class McpTools
     {
         readonly IDocumentTreeView documentTreeView;
+        readonly IDocumentTabService documentTabService;
         readonly IDecompilerService decompilerService;
         readonly McpSettings settings;
 
@@ -28,9 +30,14 @@ namespace dnSpy.Extension.MCP
         /// Initializes the MCP tools with dnSpy services.
         /// </summary>
         [ImportingConstructor]
-        public McpTools(IDocumentTreeView documentTreeView, IDecompilerService decompilerService, McpSettings settings)
+        public McpTools(
+            IDocumentTreeView documentTreeView,
+            IDocumentTabService documentTabService,
+            IDecompilerService decompilerService,
+            McpSettings settings)
         {
             this.documentTreeView = documentTreeView;
+            this.documentTabService = documentTabService;
             this.decompilerService = decompilerService;
             this.settings = settings;
         }
@@ -98,7 +105,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "list_types",
-                    Description = "List all types in an assembly or namespace. Paginated (default page size 10; override with page_size). Use names_only for a compact list of FullName strings, and base_type to list only (transitive) subclasses of a base — e.g. base_type='MonoBehaviour' lists all Unity components.",
+                    Description = "List all types in an assembly or namespace. Metadata rows include each TypeDef token so they can feed rename_symbol_by_token / decompile_by_token. Paginated (default page size 10; override with page_size). Use names_only for a compact list of FullName strings, and base_type to list only (transitive) subclasses of a base — e.g. base_type='MonoBehaviour' lists all Unity components.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -136,7 +143,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "get_type_info",
-                    Description = "Get detailed information about a specific type including its members. First request returns all fields/properties and paginated methods. Subsequent requests (with cursor) return only paginated methods. Use compact=true to drop per-member detail (name+signature+token only) and members_filter to return only members whose name matches a pattern (e.g. '*Save*') — both cut token cost sharply on large types. Field rows also carry Offset/OffsetSource/Il2CppToken when discoverable (real FieldLayout or Il2CppDumper synthetic [FieldOffset]/[Token] attributes on Unity IL2CPP dumps); omitted on normal managed fields.",
+                    Description = "Get detailed information about a specific type including its TypeDef token, generic-parameter tokens, and members. Fields/properties/events carry their metadata token; full method rows include MethodDef, parameter, and method-generic-parameter tokens. First request returns fields/properties/events and paginated methods; cursor requests return methods only. Use compact=true and members_filter to reduce output. Field rows also carry Offset/OffsetSource/Il2CppToken when discoverable.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -205,7 +212,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "search_types",
-                    Description = "Search for types by name. Defaults to all loaded assemblies — pass assembly_name to scope to one (e.g. 'Assembly-CSharp') so framework types don't drown game types. Matches nested compiler-generated types too. Paginated (default page size 10; override with page_size). Use names_only for a compact FullName-string list.",
+                    Description = "Search for types by name. Metadata rows include each TypeDef token so they can feed rename_symbol_by_token / decompile_by_token. Defaults to all loaded assemblies — pass assembly_name to scope to one (e.g. 'Assembly-CSharp') so framework types don't drown game types. Matches nested compiler-generated types too. Paginated (default page size 10; override with page_size). Use names_only for a compact FullName-string list.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -235,7 +242,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "search_members",
-                    Description = "Search for MEMBERS (methods / fields / properties / events) by name across all loaded assemblies (or one via assembly_name) — the member counterpart of search_types, together covering dnSpy's Ctrl+Shift+K 'Search Assemblies'. Use this when you have a bare member name (e.g. from decompiled code) but DON'T know its declaring type: each hit returns assembly, declaring_type, member_kind, name, full signature, the MDToken (uint), is_static and is_public. Field hits additionally carry offset/offset_source/il2cpp_token when discoverable (real FieldLayout or Il2CppDumper synthetic [FieldOffset]/[Token] attributes on Unity IL2CPP dumps); omitted otherwise. Feed token straight into decompile_by_token, or declaring_type + name into find_callers / find_references to see how the symbol is used. Paginated (default page size 10; override with page_size); names_only returns a compact list of signatures.",
+                    Description = "Search for MEMBERS (methods / fields / properties / events) by name across all loaded assemblies (or one via assembly_name) — the member counterpart of search_types, together covering dnSpy's Ctrl+Shift+K 'Search Assemblies'. Use this when you have a bare member name (e.g. from decompiled code) but DON'T know its declaring type: each hit returns assembly, declaring_type, member_kind, name, full signature, the MDToken (uint), is_static and is_public. Field hits additionally carry offset/offset_source/il2cpp_token when discoverable (real FieldLayout or Il2CppDumper synthetic [FieldOffset]/[Token] attributes on Unity IL2CPP dumps); omitted otherwise. Feed a renameable token straight into rename_symbol_by_token, or a method/type token into decompile_by_token. Paginated (default page size 10; override with page_size); names_only returns a compact list of signatures.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -747,7 +754,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "list_methods",
-                    Description = "List methods of a type with unambiguous identifiers. Each entry includes the MDToken (as uint) and parameter_types array so the caller can feed either back into get_method_il / patch_method_il / decompile_method to disambiguate overloads. Paginated (default page size 10).",
+                    Description = "List methods of a type with unambiguous identifiers. Each entry includes the MethodDef token, parameter rows with Param tokens, method generic-parameter rows with GenericParam tokens, and parameter_types for overload disambiguation. Feed any renameable token to rename_symbol_by_token. Paginated (default page size 10).",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -949,6 +956,51 @@ namespace dnSpy.Extension.MCP
                     }
                 },
                 new ToolInfo {
+                    Name = "rename_symbol_by_token",
+                    Description = "Unified metadata rename tool. target_kind selects type/class/enum/interface/struct/delegate, method, field, enum_member, enum_members, property, event, parameter, or generic_parameter. token is the matching metadata token copied from dnSpy (decimal uint or 0x hex); assembly_name is recommended for module disambiguation. Singular targets require new_name; enum_members requires a complete value-mapped members array. Matching same-module TypeRef/MemberRef rows and open decompiler tabs are refreshed where applicable. Call save_assembly afterwards to persist changes.",
+                    InputSchema = new Dictionary<string, object> {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object> {
+                            ["target_kind"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["enum"] = new List<string> {
+                                    "type", "class", "enum", "interface", "struct", "delegate",
+                                    "method", "field", "enum_member", "enum_members",
+                                    "property", "event", "parameter", "generic_parameter"
+                                },
+                                ["description"] = "Metadata symbol kind. Use enum_members for complete value-mapped enum-member batch rename."
+                            },
+                            ["token"] = new Dictionary<string, object> {
+                                ["type"] = new List<string> { "integer", "string" },
+                                ["description"] = "Matching metadata token — decimal uint or hex string copied from dnSpy (for example 0x02000001, 0x04000001, or 0x06000001)."
+                            },
+                            ["new_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Required for every singular target_kind. New simple metadata name."
+                            },
+                            ["members"] = new Dictionary<string, object> {
+                                ["type"] = "array",
+                                ["description"] = "Required only for target_kind=enum_members. Complete desired enum mapping by existing numeric value.",
+                                ["items"] = new Dictionary<string, object> {
+                                    ["type"] = "object",
+                                    ["properties"] = new Dictionary<string, object> {
+                                        ["name"] = new Dictionary<string, object> { ["type"] = "string" },
+                                        ["value"] = new Dictionary<string, object> {
+                                            ["type"] = new List<string> { "integer", "string" }
+                                        }
+                                    },
+                                    ["required"] = new List<string> { "name", "value" }
+                                }
+                            },
+                            ["assembly_name"] = new Dictionary<string, object> {
+                                ["type"] = "string",
+                                ["description"] = "Optional but recommended. Assembly/module the token belongs to."
+                            }
+                        },
+                        ["required"] = new List<string> { "target_kind", "token" }
+                    }
+                },
+                new ToolInfo {
                     Name = "save_assembly",
                     Description = "Write the (possibly patched) module of an assembly back to disk. When output_path is omitted, the original file is overwritten after a timestamped backup (<path>.<yyyyMMdd-HHmmss>.bak) is created. GAC paths are refused. Memory-mapped I/O is disabled before writing so the live dnSpy process releases the file. Note: dnSpy's in-memory tree is NOT refreshed — reopen the assembly to see the saved state inside this instance.",
                     InputSchema = new Dictionary<string, object> {
@@ -1019,6 +1071,7 @@ namespace dnSpy.Extension.MCP
                         "force_return" => ForceReturn(arguments),
                         "nop_method" => NopMethod(arguments),
                         "revert_method_il" => RevertMethodIL(arguments),
+                        "rename_symbol_by_token" => RenameSymbolByToken(arguments),
                         "save_assembly" => SaveAssembly(arguments),
                         _ => new CallToolResult
                         {
@@ -1285,6 +1338,7 @@ namespace dnSpy.Extension.MCP
             var types = allTypes
                 .Select(t => new
                 {
+                    Token = t.MDToken.Raw,
                     FullName = t.FullName,
                     Namespace = t.Namespace.String,
                     Name = t.Name.String,
@@ -1334,7 +1388,7 @@ namespace dnSpy.Extension.MCP
             // compact: drop per-member detail (params/flags) and keep just name+signature+token —
             // GetTypeInfo on a 60-field / many-method type is otherwise very heavy in tokens.
             // members_filter: name pattern (substring or '*' wildcard) applied to methods/fields/
-            // properties so you can ask for just *Save* members instead of the whole type.
+            // properties/events so you can ask for just *Save* members instead of the whole type.
             var compact = ReadOptionalBool(arguments, "compact") ?? false;
             var memberFilterRaw = ReadOptionalString(arguments, "members_filter");
             var memberMatch = memberFilterRaw == null ? (_ => true) : BuildStringMatcher(memberFilterRaw);
@@ -1357,10 +1411,17 @@ namespace dnSpy.Extension.MCP
                     IsAbstract = m.IsAbstract,
                     ReturnType = m.ReturnType?.FullName ?? "void",
                     ParameterTypes = m.MethodSig == null ? new List<string>() : m.MethodSig.Params.Select(t => t?.FullName ?? "?").ToList(),
-                    Parameters = m.Parameters.Select(p => new
+                    Parameters = m.Parameters.Where(p => p.IsNormalMethodParameter).Select(p => new
                     {
                         Name = p.Name,
-                        Type = p.Type.FullName
+                        Type = p.Type.FullName,
+                        Token = p.ParamDef?.MDToken.Raw
+                    }).ToList(),
+                    GenericParameters = m.GenericParameters.Select(p => new
+                    {
+                        Name = p.Name.String,
+                        Token = p.MDToken.Raw,
+                        Number = p.Number
                     }).ToList()
                 }).ToList();
 
@@ -1368,6 +1429,7 @@ namespace dnSpy.Extension.MCP
             {
                 var row = new Dictionary<string, object>
                 {
+                    ["Token"] = f.MDToken.Raw,
                     ["Name"] = f.Name.String,
                     ["Type"] = f.FieldType.FullName
                 };
@@ -1377,6 +1439,8 @@ namespace dnSpy.Extension.MCP
                     row["IsStatic"] = f.IsStatic;
                     row["IsLiteral"] = f.IsLiteral;
                 }
+                if (f.HasConstant && f.Constant?.Value != null)
+                    row["Constant"] = f.Constant.Value;
                 ReadFieldOffsetInfo(f, out var off, out var src, out var tok);
                 if (off != null) row["Offset"] = off;
                 if (src != null) row["OffsetSource"] = src;
@@ -1385,13 +1449,25 @@ namespace dnSpy.Extension.MCP
             }).ToList();
 
             var properties = type.Properties.Where(p => memberMatch(p.Name.String)).Select(p => compact
-                ? (object)new { Name = p.Name.String, Type = p.PropertySig?.RetType?.FullName ?? "unknown" }
+                ? (object)new { Token = p.MDToken.Raw, Name = p.Name.String, Type = p.PropertySig?.RetType?.FullName ?? "unknown" }
                 : new
                 {
+                    Token = p.MDToken.Raw,
                     Name = p.Name.String,
                     Type = p.PropertySig?.RetType?.FullName ?? "unknown",
                     CanRead = p.GetMethod != null,
                     CanWrite = p.SetMethod != null
+                }).ToList();
+            var events = type.Events.Where(e => memberMatch(e.Name.String)).Select(e => compact
+                ? (object)new { Token = e.MDToken.Raw, Name = e.Name.String, Type = e.EventType?.FullName ?? "unknown" }
+                : new
+                {
+                    Token = e.MDToken.Raw,
+                    Name = e.Name.String,
+                    Type = e.EventType?.FullName ?? "unknown",
+                    HasAdd = e.AddMethod != null,
+                    HasRemove = e.RemoveMethod != null,
+                    HasInvoke = e.InvokeMethod != null
                 }).ToList();
 
             var methodsToReturn = allMethods.Skip(offset).Take(pageSize).ToList();
@@ -1400,6 +1476,7 @@ namespace dnSpy.Extension.MCP
 
             var info = new Dictionary<string, object>
             {
+                ["Token"] = type.MDToken.Raw,
                 ["FullName"] = type.FullName,
                 ["Namespace"] = type.Namespace.String,
                 ["Name"] = type.Name.String,
@@ -1412,6 +1489,12 @@ namespace dnSpy.Extension.MCP
                 ["IsSealed"] = type.IsSealed,
                 ["BaseType"] = type.BaseType?.FullName ?? "None",
                 ["Interfaces"] = type.Interfaces.Select(i => i.Interface.FullName).ToList(),
+                ["GenericParameters"] = type.GenericParameters.Select(p => new
+                {
+                    Name = p.Name.String,
+                    Token = p.MDToken.Raw,
+                    Number = p.Number
+                }).ToList(),
                 ["Methods"] = methodsToReturn,
                 ["MethodsTotalCount"] = allMethods.Count,
                 ["MethodsReturnedCount"] = methodsToReturn.Count
@@ -1425,12 +1508,15 @@ namespace dnSpy.Extension.MCP
                 info["FieldsCount"] = fields.Count;
                 info["Properties"] = properties;
                 info["PropertiesCount"] = properties.Count;
+                info["Events"] = events;
+                info["EventsCount"] = events.Count;
             }
             else
             {
                 // For paginated requests, just include counts
                 info["FieldsCount"] = fields.Count;
                 info["PropertiesCount"] = properties.Count;
+                info["EventsCount"] = events.Count;
             }
 
             if (hasMore)
@@ -1693,6 +1779,7 @@ namespace dnSpy.Extension.MCP
                 .Select(t => new
                 {
                     AssemblyName = t.Module?.Assembly?.Name.String ?? "Unknown",
+                    Token = t.MDToken.Raw,
                     FullName = t.FullName,
                     Namespace = t.Namespace.String,
                     Name = t.Name.String,
