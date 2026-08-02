@@ -386,7 +386,7 @@ namespace dnSpy.Extension.MCP
                     updated_member_references = e.MemberRefs.Count
                 }).ToList(),
                 ["note"] = changedCount != 0
-                    ? "Renamed in dnSpy's in-memory metadata. Values were validated and left unchanged. Call save_assembly to persist the change."
+                    ? "Renamed in dnSpy's in-memory metadata. Values were validated and left unchanged. Call save_assembly to persist the change. There is no revert for renames — rename back to the old names to undo. Only references inside this module are updated; other loaded assemblies that reference the old names are NOT rewritten and will no longer bind once this one is saved."
                     : "All requested names already match; no metadata names changed."
             };
             var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
@@ -689,7 +689,7 @@ namespace dnSpy.Extension.MCP
                 ["new_full_name"] = method.FullName,
                 ["updated_member_references"] = updatedMemberReferences,
                 ["note"] = changed
-                    ? "Renamed in dnSpy's in-memory metadata. Call save_assembly to persist the change to disk."
+                    ? "Renamed in dnSpy's in-memory metadata. Call save_assembly to persist the change to disk. There is no revert for renames — rename back to the old name to undo. Only references inside this module are updated; other loaded assemblies that reference the old name are NOT rewritten and will no longer bind once this one is saved."
                     : "The requested name already matches the current metadata name; no change was made."
             };
             var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
@@ -725,7 +725,7 @@ namespace dnSpy.Extension.MCP
                 ["new_full_name"] = type.FullName,
                 ["updated_type_references"] = updatedTypeReferences,
                 ["note"] = changed
-                    ? "Renamed in dnSpy's in-memory metadata. Call save_assembly to persist the change to disk."
+                    ? "Renamed in dnSpy's in-memory metadata. Call save_assembly to persist the change to disk. There is no revert for renames — rename back to the old name to undo. Only references inside this module are updated; other loaded assemblies that reference the old name are NOT rewritten and will no longer bind once this one is saved."
                     : "The requested name already matches the current metadata name; no change was made."
             };
             var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });

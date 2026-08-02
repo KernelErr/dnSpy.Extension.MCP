@@ -955,12 +955,12 @@ try
 
     Write-Host ""
     Write-Host "[RT-6] rename_symbol_by_token covers the remaining source-level metadata symbols"
-    $fixtureReflection = [Reflection.Assembly]::LoadFile($testDll)
-    $membersReflection = $fixtureReflection.GetType('TestIL.Members')
-    $greetReflection = $fixtureReflection.GetType('TestIL.Simple').GetMethod('Greet')
-    $genericOwnerReflection = $fixtureReflection.GetType('TestIL.GenericMethodOwner`1')
-    $genericFieldReflection = $fixtureReflection.GetType('TestIL.GenericFieldOwner`1').GetField('Value')
-    $bigEnumZeroReflection = $fixtureReflection.GetType('TestIL.BigEnum').GetField('Zero')
+    # Read the fixture's ground-truth metadata tokens in a CHILD process. Loading the assembly into
+    # THIS process would hold a lock on the fixture DLL for the rest of the run, so any later step
+    # that writes $testDll (e.g. an overwrite-in-place save) would fail with a sharing violation.
+    # Every other probe in this suite already shells out for exactly that reason.
+    $fixtureTokensJson = & powershell -NoProfile -Command "`$a=[Reflection.Assembly]::LoadFile('$testDll'); `$m=`$a.GetType('TestIL.Members'); `$g=`$a.GetType('TestIL.Simple').GetMethod('Greet'); [pscustomobject]@{ HealthProperty=`$m.GetProperty('Health').MetadataToken; TitleProperty=`$m.GetProperty('Title').MetadataToken; OnDiedEvent=`$m.GetEvent('OnDied').MetadataToken; Greet=`$g.MetadataToken; GreetParam0=`$g.GetParameters()[0].MetadataToken; GenericOwnerArg0=`$a.GetType('TestIL.GenericMethodOwner``1').GetGenericArguments()[0].MetadataToken; GenericFieldValue=`$a.GetType('TestIL.GenericFieldOwner``1').GetField('Value').MetadataToken; BigEnumZero=`$a.GetType('TestIL.BigEnum').GetField('Zero').MetadataToken; IDamageable=`$a.GetType('TestIL.IDamageable').MetadataToken; ExplicitLayout=`$a.GetType('TestIL.ExplicitLayout').MetadataToken; ObfuscatedDelegate=`$a.GetType('TestIL.ObfuscatedDelegate``1').MetadataToken; Collider=`$a.GetType('TestIL.Collider').MetadataToken } | ConvertTo-Json -Compress"
+    $fixtureTokens = $fixtureTokensJson | ConvertFrom-Json
     $membersMetadata = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name='TestIL.Members'; compact=$false }
     $healthMetadata = $membersMetadata.Properties | Where-Object { $_.Name -eq 'Health' } | Select-Object -First 1
     $eventMetadata = $membersMetadata.Events | Where-Object { $_.Name -eq 'OnDied' } | Select-Object -First 1
@@ -969,30 +969,30 @@ try
     $genericOwnerMetadata = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name='TestIL.GenericMethodOwner`1'; compact=$false }
     $genericFieldMetadata = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name='TestIL.GenericFieldOwner`1'; compact=$false }
     $valueFieldMetadata = $genericFieldMetadata.Fields | Where-Object { $_.Name -eq 'Value' } | Select-Object -First 1
-    Assert ([uint32]$healthMetadata.Token -eq [uint32]$membersReflection.GetProperty('Health').MetadataToken) "get_type_info exposes Property token"
-    Assert ([uint32]$eventMetadata.Token -eq [uint32]$membersReflection.GetEvent('OnDied').MetadataToken) "get_type_info exposes Event token"
-    Assert ([uint32]$greetMetadata.parameters[0].token -eq [uint32]$greetReflection.GetParameters()[0].MetadataToken) "list_methods exposes Param token"
-    Assert ([uint32]$genericOwnerMetadata.GenericParameters[0].Token -eq [uint32]$genericOwnerReflection.GetGenericArguments()[0].MetadataToken) "get_type_info exposes GenericParam token"
-    Assert ([uint32]$valueFieldMetadata.Token -eq [uint32]$genericFieldReflection.MetadataToken) "get_type_info exposes FieldDef token"
+    Assert ([uint32]$healthMetadata.Token -eq [uint32]$fixtureTokens.HealthProperty) "get_type_info exposes Property token"
+    Assert ([uint32]$eventMetadata.Token -eq [uint32]$fixtureTokens.OnDiedEvent) "get_type_info exposes Event token"
+    Assert ([uint32]$greetMetadata.parameters[0].token -eq [uint32]$fixtureTokens.GreetParam0) "list_methods exposes Param token"
+    Assert ([uint32]$genericOwnerMetadata.GenericParameters[0].Token -eq [uint32]$fixtureTokens.GenericOwnerArg0) "get_type_info exposes GenericParam token"
+    Assert ([uint32]$valueFieldMetadata.Token -eq [uint32]$fixtureTokens.GenericFieldValue) "get_type_info exposes FieldDef token"
 
     $unifiedInterface = Rpc 'rename_symbol_by_token' @{
         assembly_name='TestIL'; target_kind='interface'
-        token=$fixtureReflection.GetType('TestIL.IDamageable').MetadataToken; new_name='IDamageTarget'
+        token=$fixtureTokens.IDamageable; new_name='IDamageTarget'
     }
     Assert ($unifiedInterface.changed -eq $true -and $unifiedInterface.target_kind -eq 'interface') "unified tool renames an interface"
     $unifiedStruct = Rpc 'rename_symbol_by_token' @{
         assembly_name='TestIL'; target_kind='struct'
-        token=$fixtureReflection.GetType('TestIL.ExplicitLayout').MetadataToken; new_name='ExplicitLayoutRenamed'
+        token=$fixtureTokens.ExplicitLayout; new_name='ExplicitLayoutRenamed'
     }
     Assert ($unifiedStruct.changed -eq $true -and $unifiedStruct.target_kind -eq 'struct') "unified tool renames a struct"
     $unifiedDelegate = Rpc 'rename_symbol_by_token' @{
         assembly_name='TestIL'; target_kind='delegate'
-        token=$fixtureReflection.GetType('TestIL.ObfuscatedDelegate`1').MetadataToken; new_name='ValueConverter`1'
+        token=$fixtureTokens.ObfuscatedDelegate; new_name='ValueConverter`1'
     }
     Assert ($unifiedDelegate.changed -eq $true -and $unifiedDelegate.target_kind -eq 'delegate') "unified tool renames a delegate"
     $unifiedClass = Rpc 'rename_symbol_by_token' @{
         assembly_name='TestIL'; target_kind='class'
-        token=$fixtureReflection.GetType('TestIL.Collider').MetadataToken; new_name='PhysicsCollider'
+        token=$fixtureTokens.Collider; new_name='PhysicsCollider'
     }
     Assert ($unifiedClass.changed -eq $true -and $unifiedClass.target_kind -eq 'class') "unified tool renames a class"
 
@@ -1003,7 +1003,7 @@ try
     Assert ($unifiedField.changed -eq $true -and $unifiedField.updated_member_references -ge 1) "unified field rename updates a generic MemberRef" "refs=$($unifiedField.updated_member_references)"
     $unifiedEnumMember = Rpc 'rename_symbol_by_token' @{
         assembly_name='TestIL'; target_kind='enum_member'
-        token=$bigEnumZeroReflection.MetadataToken; new_name='None'
+        token=$fixtureTokens.BigEnumZero; new_name='None'
     }
     Assert ($unifiedEnumMember.changed -eq $true -and $unifiedEnumMember.target_kind -eq 'enum_member') "unified tool renames one enum member by FieldDef token"
     $unifiedProperty = Rpc 'rename_symbol_by_token' @{
@@ -1028,7 +1028,7 @@ try
     Assert ($unifiedGenericParameter.changed -eq $true -and $unifiedGenericParameter.target_kind -eq 'generic_parameter') "unified tool renames a generic parameter"
     $unifiedMethod = Rpc 'rename_symbol_by_token' @{
         assembly_name='TestIL'; target_kind='method'
-        token=$greetReflection.MetadataToken; new_name='FormatGreeting'
+        token=$fixtureTokens.Greet; new_name='FormatGreeting'
     }
     Assert ($unifiedMethod.changed -eq $true -and $unifiedMethod.new_name -eq 'FormatGreeting') "unified tool delegates MethodDef rename"
     $unifiedEnumBatch = Rpc 'rename_symbol_by_token' @{
@@ -1051,10 +1051,76 @@ try
     try {
         Rpc 'rename_symbol_by_token' @{
             assembly_name='TestIL'; target_kind='event'
-            token=$membersReflection.GetProperty('Title').MetadataToken; new_name='WrongKind'
+            token=$fixtureTokens.TitleProperty; new_name='WrongKind'
         } | Out-Null
     } catch { $kindMismatchError = $_.Exception.Message }
     Assert ($kindMismatchError -and ($kindMismatchError -match 'not a Event token')) "target_kind/token-table mismatch is rejected before mutation" "got: $kindMismatchError"
+
+    Write-Host ""
+    Write-Host "[RT-6b] rename guards reject conflicting and CLR-reserved names before mutating"
+    # These are the "stop before you corrupt the module" guards. They matter more than the happy
+    # paths: a rename that silently produced two same-named siblings, or renamed .ctor / value__,
+    # yields a module that saves fine and is then rejected by the runtime. Each case asserts BOTH
+    # that the call was refused AND that the target kept its original name.
+    $membersTypeToken = [uint32]$membersMetadata.Token
+
+    # 1. Sibling name conflict: TestIL.Members and TestIL.Simple are both still under namespace
+    #    TestIL at this point, so renaming one onto the other must be refused.
+    $siblingConflictError = $null
+    try {
+        Rpc 'rename_symbol_by_token' @{
+            assembly_name='TestIL'; target_kind='class'; token=$membersTypeToken; new_name='Simple'
+        } | Out-Null
+    } catch { $siblingConflictError = $_.Exception.Message }
+    Assert ($siblingConflictError -and ($siblingConflictError -match 'sibling type named')) "renaming onto an existing sibling type name is rejected" "got: $siblingConflictError"
+    $membersStillThere = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name='TestIL.Members'; compact=$true }
+    Assert ([uint32]$membersStillThere.Token -eq $membersTypeToken) "the conflicting rename left TestIL.Members untouched"
+
+    # 2. Constructors: .ctor / .cctor are CLR-reserved names.
+    $membersMethods = Rpc 'list_methods' @{ assembly_name='TestIL'; type_full_name='TestIL.Members'; page_size=100 }
+    $ctorToken = ($membersMethods.items | Where-Object { $_.name -eq '.ctor' } | Select-Object -First 1).token
+    Assert ($null -ne $ctorToken) "fixture exposes a .ctor MethodDef token to test against"
+    $ctorError = $null
+    try {
+        Rpc 'rename_symbol_by_token' @{
+            assembly_name='TestIL'; target_kind='method'; token=$ctorToken; new_name='NotAConstructor'
+        } | Out-Null
+    } catch { $ctorError = $_.Exception.Message }
+    Assert ($ctorError -and ($ctorError -match 'reserved by the CLR|[Cc]onstructor')) "renaming a constructor is rejected" "got: $ctorError"
+
+    # 3. The <Module> pseudo-type is always TypeDef 0x02000001 and must never be renamed.
+    $moduleTypeError = $null
+    try {
+        Rpc 'rename_symbol_by_token' @{
+            assembly_name='TestIL'; target_kind='type'; token='0x02000001'; new_name='NotModule'
+        } | Out-Null
+    } catch { $moduleTypeError = $_.Exception.Message }
+    Assert ($moduleTypeError -and ($moduleTypeError -match '<Module>')) "renaming the <Module> type is rejected" "got: $moduleTypeError"
+
+    # 4. An enum's value__ backing field carries the underlying type; renaming it breaks the enum.
+    $bigEnumInfo = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name='TestIL.BigEnumRenamed'; compact=$false }
+    $valueBackingToken = ($bigEnumInfo.Fields | Where-Object { $_.Name -eq 'value__' } | Select-Object -First 1).Token
+    Assert ($null -ne $valueBackingToken) "fixture exposes the enum value__ FieldDef token to test against"
+    $valueBackingError = $null
+    try {
+        Rpc 'rename_symbol_by_token' @{
+            assembly_name='TestIL'; target_kind='field'; token=$valueBackingToken; new_name='underlying'
+        } | Out-Null
+    } catch { $valueBackingError = $_.Exception.Message }
+    Assert ($valueBackingError -and ($valueBackingError -match 'value__')) "renaming an enum's value__ backing field is rejected" "got: $valueBackingError"
+
+    # 5. The same reservation applies through the enum_members batch route.
+    $reservedBatchError = $null
+    try {
+        Rpc 'rename_symbol_by_token' @{
+            assembly_name='TestIL'; target_kind='enum_members'; token=[uint32]$bigEnumInfo.Token
+            members=@(@{ name='value__'; value=0 }, @{ name='Huge'; value=9000000000 })
+        } | Out-Null
+    } catch { $reservedBatchError = $_.Exception.Message }
+    Assert ($reservedBatchError -and ($reservedBatchError -match 'value__')) "enum_members refuses 'value__' as a member name" "got: $reservedBatchError"
+    # The enum must still be intact after all four refusals.
+    $bigEnumAfterGuards = Rpc 'get_type_info' @{ assembly_name='TestIL'; type_full_name='TestIL.BigEnumRenamed'; compact=$true }
+    Assert ([uint32]$bigEnumAfterGuards.Token -eq [uint32]$bigEnumInfo.Token) "the enum survived every rejected rename unchanged"
 
     Write-Host ""
     Write-Host "[RT-7] save_assembly persists all renamed metadata and dependent signatures"

@@ -494,7 +494,7 @@ namespace dnSpy.Extension.MCP
             string? extraNote = null)
         {
             var note = changed
-                ? "Renamed in dnSpy's in-memory metadata. Call save_assembly to persist the change to disk."
+                ? "Renamed in dnSpy's in-memory metadata. Call save_assembly to persist the change to disk. There is no revert for renames — rename back to the old name to undo. Only references inside this module are updated; other loaded assemblies that reference the old name are NOT rewritten and will no longer bind once this one is saved."
                 : "The requested name already matches the current metadata name; no change was made.";
             if (!string.IsNullOrEmpty(extraNote))
                 note += " " + extraNote;
