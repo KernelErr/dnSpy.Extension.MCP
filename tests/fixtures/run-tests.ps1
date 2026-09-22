@@ -26,6 +26,11 @@
 
 .PARAMETER KeepDnSpy
   Leave dnSpy running after the tests exit (handy for ad-hoc follow-up curls).
+
+.PARAMETER Headless
+  Drive the headless host (dnSpy.Extension.MCP.Headless.exe, deployed next to dnSpy.Console.exe)
+  over stdio instead of dnSpy's GUI + HTTP server: the same tool assertions against the same fixture,
+  skipping only the HTTP-specific steps.
 #>
 
 [CmdletBinding()]
@@ -41,7 +46,8 @@ param(
     [ValidateSet('net10.0-windows', 'net48')]
     [string]$Tfm = 'net10.0-windows',
     [switch]$SkipBuild,
-    [switch]$KeepDnSpy
+    [switch]$KeepDnSpy,
+    [switch]$Headless
 )
 
 $ErrorActionPreference = 'Stop'
@@ -108,11 +114,25 @@ function Assert($condition, [string]$label, [string]$detail = '')
     else { Write-Host "  FAIL  $label  $detail" -ForegroundColor Red; $script:fail++ }
 }
 
+# One JSON-RPC round trip over whichever transport this run drives: an HTTP POST to dnSpy's server,
+# or a line on the headless host's stdin answered by one line on its stdout (the MCP stdio transport).
+function Send-JsonRpc([string]$payload, [int]$p = $script:Port)
+{
+    if ($script:Headless) {
+        $script:headlessProc.StandardInput.WriteLine($payload)
+        $script:headlessProc.StandardInput.Flush()
+        $line = $script:headlessProc.StandardOutput.ReadLine()
+        if ($null -eq $line) { throw "the headless host closed stdout (exited: $($script:headlessProc.HasExited))" }
+        return $line
+    }
+    $resp = Invoke-WebRequest -Uri "http://localhost:$p/" -Method Post -ContentType 'application/json' -Body $payload -UseBasicParsing
+    return $resp.Content
+}
+
 function Rpc([string]$tool, [hashtable]$arguments, [int]$p = $script:Port)
 {
     $payload = @{ jsonrpc='2.0'; id=1; method='tools/call'; params=@{ name=$tool; arguments=$arguments } } | ConvertTo-Json -Depth 10 -Compress
-    $resp = Invoke-WebRequest -Uri "http://localhost:$p/" -Method Post -ContentType 'application/json' -Body $payload -UseBasicParsing
-    $jr = $resp.Content | ConvertFrom-Json
+    $jr = (Send-JsonRpc $payload $p) | ConvertFrom-Json
     if ($jr.error) { throw "Tool $tool RPC error: $($jr.error.message)" }
     if ($jr.result.isError -eq $true) { throw "Tool $tool returned error: $($jr.result.content[0].text)" }
     $text = $jr.result.content[0].text
@@ -122,8 +142,7 @@ function Rpc([string]$tool, [hashtable]$arguments, [int]$p = $script:Port)
 function RpcText([string]$tool, [hashtable]$arguments, [int]$p = $script:Port)
 {
     $payload = @{ jsonrpc='2.0'; id=1; method='tools/call'; params=@{ name=$tool; arguments=$arguments } } | ConvertTo-Json -Depth 10 -Compress
-    $resp = Invoke-WebRequest -Uri "http://localhost:$p/" -Method Post -ContentType 'application/json' -Body $payload -UseBasicParsing
-    $jr = $resp.Content | ConvertFrom-Json
+    $jr = (Send-JsonRpc $payload $p) | ConvertFrom-Json
     if ($jr.error) { throw "Tool $tool RPC error: $($jr.error.message)" }
     if ($jr.result.isError -eq $true) { throw "Tool $tool returned error: $($jr.result.content[0].text)" }
     return $jr.result.content[0].text
@@ -134,8 +153,7 @@ function RpcText([string]$tool, [hashtable]$arguments, [int]$p = $script:Port)
 function RawRpc([string]$method, [hashtable]$params, [int]$p = $script:Port)
 {
     $payload = @{ jsonrpc='2.0'; id=1; method=$method; params=$params } | ConvertTo-Json -Depth 10 -Compress
-    $resp = Invoke-WebRequest -Uri "http://localhost:$p/" -Method Post -ContentType 'application/json' -Body $payload -UseBasicParsing
-    return ($resp.Content | ConvertFrom-Json)
+    return ((Send-JsonRpc $payload $p) | ConvertFrom-Json)
 }
 
 # ----- step 1: build fixture -----
@@ -149,11 +167,20 @@ if (-not $SkipBuild)
     Push-Location $extDir
     try { & dotnet build -c Release --nologo -v q; if ($LASTEXITCODE -ne 0) { throw "extension build failed" } }
     finally { Pop-Location }
+    if ($Headless)
+    {
+        Write-Host "[2b] Building the headless host (Release)"
+        Push-Location (Join-Path $extDir 'headless')
+        try { & dotnet build -c Release --nologo -v q; if ($LASTEXITCODE -ne 0) { throw "headless host build failed" } }
+        finally { Pop-Location }
+    }
     Write-Host ""
 }
 
+$headlessBuild = Join-Path $extDir "headless\bin\Release\$Tfm"
 if (-not (Test-Path $testDll)) { throw "Fixture DLL missing: $testDll" }
 if (-not (Test-Path $extDllSrc)) { throw "Extension DLL missing: $extDllSrc" }
+if ($Headless -and -not (Test-Path (Join-Path $headlessBuild 'dnSpy.Extension.MCP.Headless.exe'))) { throw "Headless host build missing: $headlessBuild" }
 
 $originalHash = (Get-FileHash -Algorithm SHA256 $testDll).Hash
 Write-Host "[*] Fixture SHA256 (pre-patch): $originalHash"
@@ -164,7 +191,33 @@ if (-not (Test-Path $extDeployDir)) { New-Item -ItemType Directory -Path $extDep
 Copy-Item $extDllSrc $extDeployDir -Force
 $pdb = [System.IO.Path]::ChangeExtension($extDllSrc, '.pdb')
 if (Test-Path $pdb) { Copy-Item $pdb $extDeployDir -Force }
+if ($Headless)
+{
+    # Next to dnSpy.Console.exe, as the release bundles ship it; it loads the extension from $extDeployDir.
+    & (Join-Path $extDir 'headless\deploy-headless.ps1') -DnSpyDir (Split-Path $dnSpyExeFull -Parent) -BuildOutput $headlessBuild
+}
 
+if ($Headless)
+{
+    # ----- step 4 (headless): launch the host with the fixture preloaded, speaking MCP over stdio -----
+    Write-Host "[4] Launching the headless host + loading $testDll"
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = Join-Path (Split-Path $dnSpyExeFull -Parent) 'dnSpy.Extension.MCP.Headless.exe'
+    $psi.Arguments = "`"$testDll`""
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding $false
+    $script:headlessProc = [System.Diagnostics.Process]::Start($psi)
+    # Drain stderr (the host's log) from the start: an unread pipe fills up and blocks the host.
+    $script:headlessLog = $script:headlessProc.StandardError.ReadToEndAsync()
+    $hinit = RawRpc 'initialize' @{ protocolVersion='2025-06-18'; capabilities=@{}; clientInfo=@{ name='run-tests'; version='1' } }
+    if (-not $hinit.result) { throw "the headless host didn't answer initialize: $($hinit | ConvertTo-Json -Compress -Depth 5)" }
+    Write-Host "  headless host is up: $($hinit.result.serverInfo.name) $($hinit.result.serverInfo.version)"
+}
+else
+{
 # ----- step 4: launch dnSpy with the fixture preloaded -----
 Write-Host "[4] Launching dnSpy + loading $testDll"
 Set-McpPortInSettings $Port
@@ -215,6 +268,7 @@ if (-not $found)
     throw "MCP server never came up on ports $Port..$($Port+19) — see DIAGNOSTIC above"
 }
 Write-Host "  MCP server is up on port $script:Port"
+}
 
 # Wait for TestIL to actually appear in the tree. dnSpy loads CLI-provided files
 # asynchronously, so the health port can come up before the assembly is indexed.
@@ -627,6 +681,8 @@ try
     Assert ($voidErr -and ($voidErr -match 'void')) "force_return value on a void method errors helpfully" "got: $voidErr"
 
     # ----- step 23: loopback binding — 127.0.0.1 must work, browser GET / must not 404 -----
+    # (HTTP-only: the headless host has no listener.)
+    if (-not $Headless) {
     Write-Host ""
     Write-Host "[23] server reachable via 127.0.0.1 + browser status page"
     # Before the multi-prefix fix, a localhost-only HttpListener prefix made http.sys reject
@@ -638,6 +694,7 @@ try
     $rootPage = $null
     try { $rootPage = Invoke-WebRequest -Uri "http://localhost:$($script:Port)/" -UseBasicParsing -TimeoutSec 5 } catch { $rootPage = $_.Exception }
     Assert ($rootPage.StatusCode -eq 200 -and $rootPage.Content -match 'MCP') "browser GET / returns a 200 status page (not 404)" "got: $rootPage"
+    }
 
     # ----- step 24: decompile_type (whole-type decompilation) -----
     Write-Host ""
@@ -1214,6 +1271,24 @@ try
 }
 finally
 {
+    if ($Headless -and $script:headlessProc)
+    {
+        # Closing stdin is the MCP stdio shutdown signal: the host must exit on its own, cleanly.
+        Write-Host ""
+        Write-Host "[H] headless host shuts down when stdin closes"
+        try { $script:headlessProc.StandardInput.Close() } catch { }
+        if ($script:headlessProc.WaitForExit(15000)) {
+            Assert ($script:headlessProc.ExitCode -eq 0) "headless host exits with code 0 when stdin closes" "code=$($script:headlessProc.ExitCode)"
+        } else {
+            Assert $false "headless host exits when stdin closes" "still running after 15 s; killing it"
+            try { $script:headlessProc.Kill() } catch { }
+        }
+        if ($fail -ne 0 -and $script:headlessLog.IsCompleted) {
+            Write-Host "  --- headless host log (tail) ---"
+            ($script:headlessLog.Result -split "`n" | Select-Object -Last 25) | ForEach-Object { Write-Host "    $_" }
+        }
+    }
+
     Write-Host ""
     Write-Host "===== SUMMARY: $pass pass / $fail fail ====="
     if (-not $KeepDnSpy -and $dnSpyProc -and -not $dnSpyProc.HasExited)

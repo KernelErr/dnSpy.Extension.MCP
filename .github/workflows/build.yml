@@ -74,6 +74,11 @@ jobs:
         working-directory: dnSpy\Extensions\dnSpy.Extension.MCP
         run: dotnet build -c ${{ matrix.configuration }} -f net10.0-windows
 
+      - name: Build headless host (both TFMs)
+        shell: pwsh
+        working-directory: dnSpy\Extensions\dnSpy.Extension.MCP\headless
+        run: dotnet build -c ${{ matrix.configuration }}
+
       - name: Upload net48 artifact
         if: matrix.configuration == 'Release'
         uses: actions/upload-artifact@v4

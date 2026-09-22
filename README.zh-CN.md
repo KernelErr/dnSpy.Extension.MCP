@@ -21,6 +21,8 @@ English: see [README.md](README.md).
 
    Claude 会自己挑合适的工具（`search_string_literals` → `find_references` → `decompile_method`）。完整能力见[功能](#功能)。
 
+> **不想一直开着 dnSpy？** 一体化压缩包里还附带 `dnSpy.Extension.MCP.Headless.exe`，由 MCP 客户端通过 stdio 按需启动——没有窗口、不用设置、不占端口。见 [Headless 模式](#headless-模式)。
+
 ## 功能
 
 ### MCP 工具（共 32 个）
@@ -170,7 +172,7 @@ curl -s -X POST http://localhost:3000/ -H "Content-Type: application/json" -d '{
 2. 双击 `dnSpy.exe`。
 3. 打开**视图 → 选项 → MCP Server**，勾选 **Enable Server**，点击确定。
 
-搞定。如果你已经装好了 dnSpy、只想拿插件，参考下面的"仅插件"方式。
+搞定。如果你已经装好了 dnSpy、只想拿插件，参考下面的"仅插件"方式。每个压缩包里 `dnSpy.exe` 旁边还有 [headless 宿主](#headless-模式) `dnSpy.Extension.MCP.Headless.exe`。
 
 ### 仅插件（已安装 dnSpy 的用户）
 
@@ -199,6 +201,8 @@ C:\Tools\dnSpy\bin\Extensions\dnSpy.Extension.MCP\dnSpy.Extension.MCP.x.dll
 
 如果 DLL 直接放在 `bin\Extensions\` 下（没有子文件夹），或者丢了 `.x` 后缀，dnSpy 会静默忽略它，设置界面里也看不到 MCP Server 这一项。
 
+[headless 宿主](#headless-模式)只在一体化压缩包里提供：它必须放在 `dnSpy.Console.exe` 旁边，并且按该 dnSpy 的运行时和 CPU 架构构建，压缩包已经替你配好了。
+
 ### 从源码构建
 
 ```bash
@@ -226,9 +230,48 @@ cp bin/Release/net10.0-windows/dnSpy.Extension.MCP.x.dll \
 - **Port** — 首选 TCP 端口（默认 `3000`）。若端口已被占用，扩展会自动尝试 `port + 1`，最多 20 次，并在日志中记录最终绑定的端口。查看 Server Log 面板确认实际端口。
 - **Host** — 绑定地址（默认 `localhost`）。
 
+## Headless 模式
+
+一体化压缩包里 `dnSpy.exe` 旁边还有 **`dnSpy.Extension.MCP.Headless.exe`**：同样的 32 个工具和 6 份资源，通过 MCP **stdio** 传输提供，不需要 dnSpy 窗口。把它注册到 MCP 客户端后，客户端会在需要时自动启动、用完自动关闭，和其他 stdio MCP 服务器一样——不用手动启动、不用设置、不占端口。大多数客户端（Claude Desktop、Cursor、Chatbox 等）都用 `command` + `args` 配置：
+
+```json
+{
+  "mcpServers": {
+    "dnspy": {
+      "command": "C:\\Tools\\dnSpy\\dnSpy.Extension.MCP.Headless.exe",
+      "args": ["C:\\Games\\MyGame\\MyGame_Data\\Managed\\Assembly-CSharp.dll"]
+    }
+  }
+}
+```
+
+Claude Code：
+
+```bash
+claude mcp add dnspy -- "C:\Tools\dnSpy\dnSpy.Extension.MCP.Headless.exe"
+```
+
+codex `~/.codex/config.toml`：
+
+```toml
+[mcp_servers.dnspy]
+command = 'C:\Tools\dnSpy\dnSpy.Extension.MCP.Headless.exe'
+args = []
+```
+
+参数是启动时要加载的文件或文件夹（文件夹会加载其中的 `*.dll`），效果与调用 `open_files` 相同；也可以不传，让 AI 自己调用 `open_files`。其他选项：`--dnspy <文件夹>`（使用另一个 dnSpy 安装）、`--quiet`（stderr 不输出日志）、`--version`、`--help`。
+
+与 dnSpy 内的服务器相比：
+
+- **独立进程，独立的已加载程序集。** 它看不到 dnSpy 窗口里加载的内容，每个启动它的客户端各有一个实例。通过启动参数或 `open_files` 加载目标。
+- **没有需要同步的界面。** 补丁和重命名对内存中元数据的修改与在 dnSpy 里完全一样，`save_assembly` 也照常写盘，只是没有树和标签页需要刷新。
+- **不锁定目标文件。** 程序集读入内存而不是内存映射，运行期间可以重新编译或替换它们。
+- **默认反编译设置。** 它像 `dnSpy.Console.exe` 一样获取 dnSpy 的 C# 反编译器，不带你在 GUI 里设置的选项。
+- **日志写到 stderr**，因为 stdout 是协议通道；客户端一般会在 MCP 日志里显示。
+
 ## 传输协议
 
-三种传输共用同一个 `HttpListener` 与同一端口。服务器根据请求的路径、HTTP 方法与 `Accept` 头自动选择对应的处理逻辑。
+三种传输共用同一个 `HttpListener` 与同一端口。服务器根据请求的路径、HTTP 方法与 `Accept` 头自动选择对应的处理逻辑。（[headless 宿主](#headless-模式)则使用 stdio。）
 
 ### Streamable HTTP（MCP 2025-03-26）
 
@@ -334,16 +377,7 @@ claude mcp list
 
 #### Claude Desktop
 
-```json
-{
-  "mcpServers": {
-    "dnspy": {
-      "command": "http",
-      "args": ["http://localhost:3000"]
-    }
-  }
-}
-```
+Claude Desktop 通过 stdio 启动本地 MCP 服务器，这正是 headless 宿主的工作方式：`claude_desktop_config.json` 的配置见 [Headless 模式](#headless-模式)。
 
 #### codex
 
@@ -355,6 +389,13 @@ claude mcp list
 # 单 TFM 构建，迭代更快
 dotnet build -c Debug -f net48
 dotnet build -c Debug -f net10.0-windows
+
+# headless 宿主（两个 TFM；会顺带构建扩展）
+dotnet build headless -c Release
+
+# 端到端测试：针对 dnSpy 界面 + HTTP 服务器，或通过 stdio 针对 headless 宿主
+pwsh tests/fixtures/run-tests.ps1
+pwsh tests/fixtures/run-tests.ps1 -Headless
 ```
 
 ### 项目结构
@@ -363,17 +404,21 @@ dotnet build -c Debug -f net10.0-windows
 dnSpy.Extension.MCP/
 ├── .github/workflows/          GitHub Actions（构建与发布）
 ├── McpServer.cs                HttpListener：HTTP + SSE + Streamable HTTP + 端口自动回退
+├── McpDispatcher.cs            与传输无关的 JSON-RPC 分派（initialize / 工具 / 资源）
+├── IMcpHost.cs                 工具需要宿主提供的能力（文档、反编译器、界面钩子）
+├── DnSpyMcpHost.cs             dnSpy 内的 IMcpHost：文档服务、反编译器、树/标签页刷新
 ├── McpProtocol.cs              JSON-RPC 2.0 / MCP 数据模型
 ├── McpTools.cs                 分析类工具 + MEF 导出 + 请求分派与线程调度（sealed partial）
 ├── McpTools.IL.cs              IL 查看/补丁/回滚/保存 + 操作数渲染器与解析器
 ├── McpTools.Strings.cs         字符串字面量与数值常量搜索
 ├── McpTools.Xref.cs            find_callers / find_callees / find_references / find_overrides
 ├── McpTools.RenameSymbol.cs    rename_symbol_by_token 入口 + 类型/字段/属性/事件/参数等处理函数
-├── McpTools.Rename.cs          方法与类/枚举重命名核心 + 枚举成员批量重命名
+├── McpTools.Rename.cs          方法重命名核心 + 枚举成员批量重命名
 ├── McpSettings.cs              设置视图模型 + 持久化 + 日志（磁盘日志仅 Debug 构建）
 ├── McpSettingsPage.cs          实现 IAppSettingsPageProvider，接入 dnSpy 设置界面
 ├── BepInExResources.cs         内嵌的 BepInEx 文档（6 份资源）
 ├── TheExtension.cs             IExtension 入口，Loaded 时启动服务器
+├── headless/                   headless 宿主：stdio 可执行文件（无 dnSpy 窗口）+ deploy-headless.ps1
 ├── tests/check-host-deps.ps1   net48 依赖版本守卫（CI 会运行）
 ├── tests/fixtures/             TestIL.cs + build-fixture.ps1 + run-tests.ps1（端到端测试）
 └── dnSpy.Extension.MCP.csproj
@@ -383,7 +428,9 @@ dnSpy.Extension.MCP/
 
 - **目标框架**：`net48` 与 `net10.0-windows`（继承自 `DnSpyCommon.props`）。
 - **传输**：单个 `HttpListener` 同时承载普通 HTTP JSON-RPC、2024-11-05 SSE、2025-03-26 Streamable HTTP 三种协议，共用同一端口。**不**使用 Kestrel — dnSpy 的自包含 .NET 发布版不会捆绑 ASP.NET Core，任何对 `Microsoft.AspNetCore.*` 的引用都会让 MEF 在组合 `IExtension` 时抛出静默的 `TypeLoadException`，扩展入口因此无法实例化。
-- **MEF**：服务使用 `[Export(typeof(T))]` + `[ImportingConstructor]`。不要手动 `new` `McpServer` / `McpSettings` / `McpTools`。
+- **MEF**：服务使用 `[Export(typeof(T))]` + `[ImportingConstructor]`。在 dnSpy 内不要手动 `new` `McpServer` / `McpSettings` / `McpTools`。
+- **两种宿主，一套工具**：`McpTools` 只通过 `IMcpHost` 与宿主交互。在 dnSpy 内是 `DnSpyMcpHost`（dnSpy 的文档服务、界面里选中的反编译器、重命名后的树/标签页刷新）；headless 宿主则用自己的文档列表、像 `dnSpy.Console.exe` 那样加载的 dnSpy C# 反编译器，并且没有界面。JSON-RPC 处理放在与传输无关的 `McpDispatcher` 里，dnSpy 内由 HTTP 服务器调用，headless 宿主由 stdio 调用。
+- **headless 部署**在每个发布包里都与 `dnSpy.Console.exe` 保持一致（`headless/deploy-headless.ps1`）：exe 放在 `dnSpy.Console.exe` 旁边，复用该包自己的运行时配置（net48 用 `dnSpy.exe.config`，net10 用 `dnSpy.Console.runtimeconfig.json`），因此与该包一样是框架依赖或自包含。net10 下 apphost 用 dnSpy 的 AppHostPatcher 修补，且必须与该包的 CPU 架构一致。
 - **线程模型**：`ExecuteTool` 用一把锁串行化所有工具调用。只读工具直接在 HTTP 工作线程上执行，通过 `IDsDocumentService`（内部有锁，可在非 UI 线程安全使用）枚举已加载模块，绝不触碰文档树（树节点是只能在 UI 线程访问的 `DispatcherObject`），因此大范围扫描不会卡住 dnSpy 界面。会修改元数据或触碰树/标签页的工具（`open_files`、IL 补丁/回滚/保存类工具、`rename_symbol_by_token`）会被调度到 WPF UI 线程执行，这样也与 AsmEditor 自身的编辑操作串行。
 - **错误码**：工具处理函数里抛出的异常（包括参数非法时抛的 `ArgumentException`）会作为 `isError: true` 的工具结果返回，并带上错误信息，方便模型看到后自行修正重试。JSON-RPC 错误只用于协议层面：未知方法 → `-32601`，`tools/call` / `resources/read` 参数格式不对 → `-32602`，其他 → `-32603`。
 - **日志**：`McpSettings.Log(...)` 总会写 UI 日志面板，只在 **Debug** 构建下额外写入 `D:\dnspy-mcp.log`。Release 构建完全靠内存日志，终端用户机器无需可写 `D:` 盘。
@@ -396,8 +443,8 @@ dnSpy.Extension.MCP/
 
 ## CI / 发布
 
-- `.github/workflows/build.yml` — 每次 push/PR 先检查 net48 依赖版本（`tests/check-host-deps.ps1`），再以 Debug 和 Release 构建两个 TFM。
-- `.github/workflows/release.yml` — 在 GitHub 上**发布** Release 时触发（也可对已有标签手动触发）；只推送标签不会触发。它会做同样的依赖检查，构建 dnSpy 和扩展（把标签去掉开头的 `v` 作为 `serverInfo.version`），再把一体包和单独的 DLL 附到该 Release 上。
+- `.github/workflows/build.yml` — 每次 push/PR 先检查 net48 依赖版本（`tests/check-host-deps.ps1`），再以 Debug 和 Release 构建扩展和 headless 宿主的两个 TFM。
+- `.github/workflows/release.yml` — 在 GitHub 上**发布** Release 时触发（也可对已有标签手动触发）；只推送标签不会触发。它会做同样的依赖检查，构建 dnSpy、扩展和 headless 宿主（把标签去掉开头的 `v` 作为 `serverInfo.version`；headless 的 apphost 按每个包的 CPU 架构各构建一次），把两者部署进每个包，再把一体包和单独的 DLL 附到该 Release 上。
 
 ```bash
 git tag v0.1.15

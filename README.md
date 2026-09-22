@@ -21,6 +21,8 @@ From zero to "ask Claude about your assembly" in a few minutes:
 
    Claude picks the right tools (`search_string_literals` → `find_references` → `decompile_method`) on its own. See [Features](#features) for everything it can do.
 
+> **Rather not keep dnSpy open?** The all-in-one zips also ship `dnSpy.Extension.MCP.Headless.exe`, which your MCP client launches on demand over stdio — no window, no settings, no port. See [Headless mode](#headless-mode-no-dnspy-window).
+
 ## Features
 
 ### MCP Tools (32 total)
@@ -170,7 +172,7 @@ Head to [Releases](https://github.com/KernelErr/dnSpy.Extension.MCP/releases) an
 2. Double-click `dnSpy.exe`.
 3. Open **View → Options → MCP Server**, tick **Enable Server**, click OK.
 
-That's it. If you already use dnSpy and just want the plugin, see "Plugin-only" below.
+That's it. If you already use dnSpy and just want the plugin, see "Plugin-only" below. Each zip also contains the [headless host](#headless-mode-no-dnspy-window), `dnSpy.Extension.MCP.Headless.exe`, next to `dnSpy.exe`.
 
 ### Plugin-only (for users who already have dnSpy installed)
 
@@ -199,6 +201,8 @@ C:\Tools\dnSpy\bin\Extensions\dnSpy.Extension.MCP\dnSpy.Extension.MCP.x.dll
 
 If the DLL ends up directly under `bin\Extensions\` (no subfolder), or without the `.x` suffix, dnSpy silently skips it and the MCP Server settings page will not appear.
 
+The [headless host](#headless-mode-no-dnspy-window) is only in the all-in-one zips: it has to sit next to `dnSpy.Console.exe`, built for that dnSpy's runtime and architecture, which the zips set up for you.
+
 ### From source
 
 ```bash
@@ -226,9 +230,48 @@ Settings live under **View → Options → MCP Server**:
 - **Port** — preferred TCP port (default `3000`). If the port is already in use, the server automatically tries `port + 1`, up to 20 attempts, and logs which port it actually bound to. Check the Server Log pane for the resolved port.
 - **Host** — bind address (default `localhost`).
 
+## Headless mode (no dnSpy window)
+
+The all-in-one zips also contain **`dnSpy.Extension.MCP.Headless.exe`**, next to `dnSpy.exe`: the same 32 tools and 6 resources, served over the MCP **stdio** transport without the dnSpy window. Register it in your MCP client and the client starts it when needed and stops it afterwards, like any stdio MCP server — nothing to launch by hand, no settings, no port. Most clients (Claude Desktop, Cursor, Chatbox, …) take a `command` + `args` entry:
+
+```json
+{
+  "mcpServers": {
+    "dnspy": {
+      "command": "C:\\Tools\\dnSpy\\dnSpy.Extension.MCP.Headless.exe",
+      "args": ["C:\\Games\\MyGame\\MyGame_Data\\Managed\\Assembly-CSharp.dll"]
+    }
+  }
+}
+```
+
+Claude Code:
+
+```bash
+claude mcp add dnspy -- "C:\Tools\dnSpy\dnSpy.Extension.MCP.Headless.exe"
+```
+
+codex `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.dnspy]
+command = 'C:\Tools\dnSpy\dnSpy.Extension.MCP.Headless.exe'
+args = []
+```
+
+The arguments are files or folders to load at startup (a folder loads its `*.dll`), exactly like calling `open_files` — or leave them out and let the AI call `open_files`. Other options: `--dnspy <folder>` (use a different dnSpy installation), `--quiet` (no log on stderr), `--version`, `--help`.
+
+How it differs from the server inside dnSpy:
+
+- **Its own process and its own assemblies.** It doesn't see what's loaded in a dnSpy window, and each client that starts it gets a separate instance. Load targets through the arguments or `open_files`.
+- **No UI to keep in sync.** Patches and renames change the in-memory metadata exactly as inside dnSpy, and `save_assembly` writes them to disk, but there is no tree or tab to refresh.
+- **Target files aren't locked.** Assemblies are read into memory rather than memory-mapped, so you can rebuild or replace them while it runs.
+- **Default decompiler settings.** It gets dnSpy's C# decompiler the way `dnSpy.Console.exe` does, without the options you set in the GUI.
+- **The log goes to stderr**, since stdout is the protocol channel; clients usually show it in their MCP logs.
+
 ## Transports
 
-All three transports run on the same `HttpListener` on the same port. The server picks the right one by inspecting the path, HTTP method, and `Accept` header of each request.
+All three transports run on the same `HttpListener` on the same port. The server picks the right one by inspecting the path, HTTP method, and `Accept` header of each request. (The [headless host](#headless-mode-no-dnspy-window) speaks stdio instead.)
 
 ### Streamable HTTP (MCP 2025-03-26)
 
@@ -334,16 +377,7 @@ Run `/mcp` inside Claude Code to confirm `dnspy` is connected and list its tools
 
 #### Claude Desktop
 
-```json
-{
-  "mcpServers": {
-    "dnspy": {
-      "command": "http",
-      "args": ["http://localhost:3000"]
-    }
-  }
-}
-```
+Claude Desktop starts local MCP servers over stdio, which is what the headless host is: see [Headless mode](#headless-mode-no-dnspy-window) for the `claude_desktop_config.json` entry.
 
 #### codex
 
@@ -355,6 +389,13 @@ See the Streamable HTTP section above for the `~/.codex/config.toml` snippet.
 # Single-TFM builds for fast iteration
 dotnet build -c Debug -f net48
 dotnet build -c Debug -f net10.0-windows
+
+# The headless host (both TFMs; builds the extension too)
+dotnet build headless -c Release
+
+# End-to-end suite: against dnSpy's GUI + HTTP server, or against the headless host over stdio
+pwsh tests/fixtures/run-tests.ps1
+pwsh tests/fixtures/run-tests.ps1 -Headless
 ```
 
 ### Project layout
@@ -363,17 +404,21 @@ dotnet build -c Debug -f net10.0-windows
 dnSpy.Extension.MCP/
 ├── .github/workflows/          GitHub Actions (build, release)
 ├── McpServer.cs                HttpListener HTTP + SSE + Streamable HTTP + port fallback
+├── McpDispatcher.cs            Transport-independent JSON-RPC dispatch (initialize / tools / resources)
 ├── McpProtocol.cs              JSON-RPC 2.0 / MCP DTOs
+├── IMcpHost.cs                 What the tools need from their host (documents, decompiler, UI hooks)
+├── DnSpyMcpHost.cs             IMcpHost inside dnSpy: document service, decompiler, tree/tab refresh
 ├── McpTools.cs                 Analysis tools + MEF export + dispatch and threading (sealed partial)
 ├── McpTools.IL.cs              IL view/patch/revert/save + operand renderer & parser
 ├── McpTools.Strings.cs         String-literal and numeric-constant search
 ├── McpTools.Xref.cs            find_callers / find_callees / find_references / find_overrides
 ├── McpTools.RenameSymbol.cs    rename_symbol_by_token entry point + type/field/property/event/parameter handlers
-├── McpTools.Rename.cs          Method and class/enum rename cores + enum-member batch rename
+├── McpTools.Rename.cs          Method rename core + enum-member batch rename
 ├── McpSettings.cs              Settings view-model + persistence + log (disk log in Debug only)
 ├── McpSettingsPage.cs          IAppSettingsPageProvider for dnSpy settings dialog
 ├── BepInExResources.cs         Embedded BepInEx docs (6 resources)
 ├── TheExtension.cs             IExtension entry point; starts server on Loaded
+├── headless/                   Headless host: stdio exe (no dnSpy window) + deploy-headless.ps1
 ├── tests/check-host-deps.ps1   net48 dependency-version guard (run by CI)
 ├── tests/fixtures/             TestIL.cs + build-fixture.ps1 + run-tests.ps1 (E2E harness)
 └── dnSpy.Extension.MCP.csproj
@@ -383,7 +428,9 @@ dnSpy.Extension.MCP/
 
 - **Targets**: `net48` and `net10.0-windows` (inherited from `DnSpyCommon.props`).
 - **Transport**: a single `HttpListener` serves the plain HTTP JSON-RPC, 2024-11-05 SSE, and 2025-03-26 Streamable HTTP paths on one port. Kestrel is intentionally **not** used — dnSpy's self-contained .NET bundle does not ship ASP.NET Core, so any `Microsoft.AspNetCore.*` reference would cause a silent `TypeLoadException` during MEF composition and the extension's `IExtension` part would never instantiate.
-- **MEF**: services use `[Export(typeof(T))]` + `[ImportingConstructor]`. Don't `new` up `McpServer` / `McpSettings` / `McpTools`.
+- **MEF**: services use `[Export(typeof(T))]` + `[ImportingConstructor]`. Don't `new` up `McpServer` / `McpSettings` / `McpTools` inside dnSpy.
+- **Two hosts, one set of tools**: `McpTools` only talks to an `IMcpHost`. Inside dnSpy that is `DnSpyMcpHost` (dnSpy's document service, the decompiler selected in the UI, tree/tab refresh after renames); the headless host implements it with its own document list, dnSpy's C# decompiler loaded the way `dnSpy.Console.exe` loads it, and no UI. JSON-RPC handling lives in the transport-independent `McpDispatcher`, fed by the HTTP server inside dnSpy and by stdio in the headless host.
+- **Headless deployment** mirrors `dnSpy.Console.exe` in every bundle (`headless/deploy-headless.ps1`): the exe sits next to `dnSpy.Console.exe` and reuses that bundle's own runtime configuration (`dnSpy.exe.config` on net48, `dnSpy.Console.runtimeconfig.json` on net10), so it is framework-dependent or self-contained exactly as the bundle is. On net10 the apphost is patched with dnSpy's AppHostPatcher and must match the bundle's architecture.
 - **Threading**: `ExecuteTool` serializes every tool call behind one lock. Read-only tools run on the HTTP worker thread and enumerate loaded modules through `IDsDocumentService` (lock-protected, safe off the UI thread) — never the document tree, whose nodes are UI-thread-only `DispatcherObject`s — so a long whole-program sweep doesn't freeze dnSpy. Tools that mutate metadata or touch the tree/tabs (`open_files`, the IL patch/revert/save tools, `rename_symbol_by_token`) are marshalled onto the WPF UI thread, which also serializes them with AsmEditor's own edits.
 - **Error codes**: an exception inside a tool handler — including the `ArgumentException` thrown for bad input — comes back as a tool result with `isError: true` and the message, so the model sees it and can retry. JSON-RPC errors are reserved for protocol-level failures: `-32601` for an unknown method, `-32602` for malformed `tools/call` / `resources/read` params, `-32603` for anything else.
 - **Logging**: `McpSettings.Log(...)` writes to the in-UI log pane always, and to `D:\dnspy-mcp.log` only in **Debug** builds. Release builds keep everything in-memory; no writable `D:` drive is required on end-user machines.
@@ -396,8 +443,8 @@ Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/
 
 ## CI / Release
 
-- `.github/workflows/build.yml` — on every push/PR: checks the net48 dependency pins (`tests/check-host-deps.ps1`), then builds both TFMs in Debug and Release.
-- `.github/workflows/release.yml` — runs when a GitHub Release is **published** (or by manual dispatch for an existing tag); pushing a tag alone does not start it. It runs the same dependency check, builds dnSpy plus the extension (stamping the tag, minus its leading `v`, as `serverInfo.version`), and attaches the all-in-one zips and bare DLLs to that release.
+- `.github/workflows/build.yml` — on every push/PR: checks the net48 dependency pins (`tests/check-host-deps.ps1`), then builds the extension and the headless host, both TFMs, in Debug and Release.
+- `.github/workflows/release.yml` — runs when a GitHub Release is **published** (or by manual dispatch for an existing tag); pushing a tag alone does not start it. It runs the same dependency check, builds dnSpy plus the extension and the headless host (stamping the tag, minus its leading `v`, as `serverInfo.version`; the headless apphost once per bundle architecture), deploys both into each bundle, and attaches the all-in-one zips and bare DLLs to that release.
 
 ```bash
 git tag v0.1.15
