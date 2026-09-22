@@ -234,6 +234,8 @@ cp bin/Release/net10.0-windows/dnSpy.Extension.MCP.x.dll \
 
 单端点传输，codex 等新版 MCP 客户端使用。客户端在 POST 时携带 `Accept: application/json, text/event-stream`；服务器在 `initialize` 响应的 `Mcp-Session-Id` 头中分配会话 ID，后续请求需回传该头。同一端点的 `GET` 用于服务端主动推送（SSE），`DELETE` 用于显式结束会话。
 
+会话只保存在 dnSpy 的内存里，重启 dnSpy 后就没了。如果请求带着一个不是本次 dnSpy 进程签发的会话 ID（客户端在 dnSpy 重启后仍沿用旧会话），服务器会直接接纳它而不是拒绝，客户端无需重新连接即可继续使用（有些客户端，比如基于官方 TypeScript SDK 的，自己不会重新初始化）。只有客户端用 `DELETE` 结束过的会话才会返回 `404`。
+
 路径 `/` 与 `/mcp` 均可作为端点。
 
 ```bash

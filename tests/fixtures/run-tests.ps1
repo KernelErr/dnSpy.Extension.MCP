@@ -1211,6 +1211,48 @@ try
     Assert (($null -eq $templates.error) -and ($templates.result.PSObject.Properties.Name -contains 'resourceTemplates') -and (@($templates.result.resourceTemplates).Count -eq 0)) "resources/templates/list answers with an empty list" "got: $($templates | ConvertTo-Json -Compress -Depth 5)"
     $unknown = RawRpc 'no/such/method' @{}
     Assert ($unknown.error.code -eq -32601) "an unknown JSON-RPC method gets -32601 (Method not found)" "got $($unknown.error.code): $($unknown.error.message)"
+
+    # ----- step 36: Streamable HTTP sessions survive a dnSpy restart (issue #24) -----
+    # Sessions live in memory, so a client that keeps its Mcp-Session-Id across a dnSpy restart presents
+    # an id this process never issued. The official TypeScript SDK (Chatbox) doesn't re-initialize on
+    # the spec's 404, so every call failed with "Unknown Mcp-Session-Id" until a manual reconnect.
+    # A random id stands in for the pre-restart one: to the server they are indistinguishable.
+    Write-Host ""
+    Write-Host "[36] Streamable HTTP: an unknown session id is adopted, a DELETEd one is refused"
+    function StreamablePost([hashtable]$body, [string]$sessionId)
+    {
+        $headers = @{ Accept = 'application/json, text/event-stream' }
+        if ($sessionId) { $headers['Mcp-Session-Id'] = $sessionId }
+        $json = $body | ConvertTo-Json -Depth 10 -Compress
+        try {
+            $r = Invoke-WebRequest -Uri "http://localhost:$($script:Port)/" -Method Post -ContentType 'application/json' -Headers $headers -Body $json -UseBasicParsing
+            return @{ Status = [int]$r.StatusCode; Body = [string]$r.Content; SessionId = "$($r.Headers['Mcp-Session-Id'])" }
+        } catch {
+            $status = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { -1 }
+            return @{ Status = $status; Body = "$($_.ErrorDetails.Message)"; SessionId = '' }
+        }
+    }
+    $sInit = StreamablePost @{ jsonrpc='2.0'; id=1; method='initialize'; params=@{ protocolVersion='2025-06-18'; capabilities=@{}; clientInfo=@{ name='run-tests'; version='1' } } } $null
+    $sid = $sInit.SessionId
+    Assert ($sInit.Status -eq 200 -and $sid) "initialize issues an Mcp-Session-Id" "status=$($sInit.Status)"
+    $sKnown = StreamablePost @{ jsonrpc='2.0'; id=2; method='tools/list'; params=@{} } $sid
+    Assert ($sKnown.Status -eq 200 -and $sKnown.Body -match '"tools"') "a request on the issued session succeeds" "status=$($sKnown.Status)"
+    $sStale = StreamablePost @{ jsonrpc='2.0'; id=3; method='tools/list'; params=@{} } ([guid]::NewGuid().ToString('N'))
+    Assert ($sStale.Status -eq 200 -and $sStale.Body -match '"tools"') "a session id this dnSpy process never issued is adopted, not refused with 404" "status=$($sStale.Status) body=$($sStale.Body)"
+    # The SDK also reopens its standalone GET event stream with the old id after a restart.
+    Add-Type -AssemblyName System.Net.Http
+    $http = New-Object System.Net.Http.HttpClient
+    $getReq = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "http://localhost:$($script:Port)/")
+    $getReq.Headers.Add('Accept', 'text/event-stream')
+    $getReq.Headers.Add('Mcp-Session-Id', [guid]::NewGuid().ToString('N'))
+    $getResp = $http.SendAsync($getReq, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+    $getStatus = [int]$getResp.StatusCode
+    $getResp.Dispose(); $http.Dispose()
+    Assert ($getStatus -eq 200) "the GET event stream adopts an unknown session id too" "status=$getStatus"
+    # A session the client explicitly ended stays ended: the spec's real termination case keeps its 404.
+    try { Invoke-WebRequest -Uri "http://localhost:$($script:Port)/" -Method Delete -Headers @{ 'Mcp-Session-Id' = $sid } -UseBasicParsing | Out-Null } catch { }
+    $sDeleted = StreamablePost @{ jsonrpc='2.0'; id=4; method='tools/list'; params=@{} } $sid
+    Assert ($sDeleted.Status -eq 404) "a session the client DELETEd is refused with 404" "status=$($sDeleted.Status)"
 }
 finally
 {
