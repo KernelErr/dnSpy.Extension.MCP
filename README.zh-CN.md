@@ -31,7 +31,7 @@ English: see [README.md](README.md).
 
 #### 分析与导航
 
-1. **list_assemblies** — 列出所有已加载的程序集及其元数据（`name_filter` 子串/通配,从几百个 Unity 框架模块里筛出目标）
+1. **list_assemblies** — 列出所有已加载的程序集及其元数据和磁盘路径 `Path`（`name_filter` 子串/通配,从几百个 Unity 框架模块里筛出目标）。所有工具的 `assembly_name` 都接受简单名、完整名或这个 `Path`；同名程序集加载了不止一个（同一 DLL 的两份副本或两个版本）时，按名字查找会因歧义被拒绝，此时请传 `Path`
 2. **get_assembly_info** — 查看指定程序集的详细信息（命名空间分页）
 3. **list_types** — 列出程序集或命名空间下的所有类型；分页（`page_size` 可调,`names_only` 紧凑模式）。元数据条目包含 TypeDef `token`。默认包含嵌套类型及编译器生成的状态机（带 `is_nested` / `is_compiler_generated` 标志；`include_nested=false` 仅顶层）。`base_type` 过滤出（传递的）子类,如 `base_type='MonoBehaviour'`
 4. **get_type_info** — 返回 TypeDef `token`、类型泛型参数 Token、带 Token 的字段/属性/事件，以及分页的方法；完整方法条目还含 MethodDef、Param 和方法 GenericParam Token。`compact` 可精简，`members_filter` 可按名称过滤
@@ -149,9 +149,9 @@ curl -s -X POST http://localhost:3000/ -H "Content-Type: application/json" -d '{
 
 ### 注意事项
 
-- **没有 Ctrl+Z**。`patch_method_il` 不走 dnSpy 的撤销栈，想回退请用 `revert_method_il` — 每个方法在第一次被补丁时自动建立快照，revert 后或一次成功 save 后快照会被清理。
+- **没有 Ctrl+Z**。`patch_method_il` 不走 dnSpy 的撤销栈，想回退请用 `revert_method_il` — 每个方法在第一次被补丁时自动建立快照，revert 后快照会被清理。快照在 `save_assembly` 之后依然保留，所以写盘后仍可在内存里回退（再保存一次即可落盘）。
 - **保存后 dnSpy 的内存视图不会自动刷新**。要在当前 dnSpy 窗口里看到落盘后的状态，需要重新打开该程序集。
-- **GAC 路径会被拒绝**。保存 `mscorlib` 等 GAC 程序集会返回 `-32602` 错误。
+- **GAC 路径会被拒绝**。保存 `mscorlib` 等 GAC 程序集会返回错误结果。
 - **仅限指令层面**。添加/删除局部变量或异常处理块不在当前范围内；`get_method_il` 会以只读形式暴露它们。
 
 ## 安装
@@ -361,17 +361,21 @@ dotnet build -c Debug -f net10.0-windows
 
 ```
 dnSpy.Extension.MCP/
-├── .github/workflows/      GitHub Actions（构建与发布）
-├── McpServer.cs            HttpListener：HTTP + SSE + Streamable HTTP + 端口自动回退
-├── McpProtocol.cs          JSON-RPC 2.0 / MCP 数据模型
-├── McpTools.cs             分析类工具 + MEF 导出 + 请求分派（sealed partial）
-├── McpTools.IL.cs          IL 查看/补丁/回滚/保存 + 操作数渲染器与解析器
-├── McpTools.Rename.cs      按 TypeDef token 重命名类/枚举 + TypeRef/类型树同步
-├── McpSettings.cs          设置视图模型 + 持久化 + 日志（磁盘日志仅 Debug 构建）
-├── McpSettingsPage.cs      实现 IAppSettingsPageProvider，接入 dnSpy 设置界面
-├── BepInExResources.cs     内嵌的 BepInEx 文档（6 份资源）
-├── TheExtension.cs         IExtension 入口，Loaded 时启动服务器
-├── tests/fixtures/         TestIL.cs + build-fixture.ps1 + run-tests.ps1（端到端测试）
+├── .github/workflows/          GitHub Actions（构建与发布）
+├── McpServer.cs                HttpListener：HTTP + SSE + Streamable HTTP + 端口自动回退
+├── McpProtocol.cs              JSON-RPC 2.0 / MCP 数据模型
+├── McpTools.cs                 分析类工具 + MEF 导出 + 请求分派与线程调度（sealed partial）
+├── McpTools.IL.cs              IL 查看/补丁/回滚/保存 + 操作数渲染器与解析器
+├── McpTools.Strings.cs         字符串字面量与数值常量搜索
+├── McpTools.Xref.cs            find_callers / find_callees / find_references / find_overrides
+├── McpTools.RenameSymbol.cs    rename_symbol_by_token 入口 + 类型/字段/属性/事件/参数等处理函数
+├── McpTools.Rename.cs          方法与类/枚举重命名核心 + 枚举成员批量重命名
+├── McpSettings.cs              设置视图模型 + 持久化 + 日志（磁盘日志仅 Debug 构建）
+├── McpSettingsPage.cs          实现 IAppSettingsPageProvider，接入 dnSpy 设置界面
+├── BepInExResources.cs         内嵌的 BepInEx 文档（6 份资源）
+├── TheExtension.cs             IExtension 入口，Loaded 时启动服务器
+├── tests/check-host-deps.ps1   net48 依赖版本守卫（CI 会运行）
+├── tests/fixtures/             TestIL.cs + build-fixture.ps1 + run-tests.ps1（端到端测试）
 └── dnSpy.Extension.MCP.csproj
 ```
 
@@ -380,24 +384,25 @@ dnSpy.Extension.MCP/
 - **目标框架**：`net48` 与 `net10.0-windows`（继承自 `DnSpyCommon.props`）。
 - **传输**：单个 `HttpListener` 同时承载普通 HTTP JSON-RPC、2024-11-05 SSE、2025-03-26 Streamable HTTP 三种协议，共用同一端口。**不**使用 Kestrel — dnSpy 的自包含 .NET 发布版不会捆绑 ASP.NET Core，任何对 `Microsoft.AspNetCore.*` 的引用都会让 MEF 在组合 `IExtension` 时抛出静默的 `TypeLoadException`，扩展入口因此无法实例化。
 - **MEF**：服务使用 `[Export(typeof(T))]` + `[ImportingConstructor]`。不要手动 `new` `McpServer` / `McpSettings` / `McpTools`。
-- **UI 线程调度**：`ExecuteTool` 里所有工具处理函数都通过 WPF Dispatcher 调度执行。`IDocumentTreeView` 的节点是 `DispatcherObject`，一旦有用户加载的程序集被索引，从 HTTP 工作线程直接访问就会抛 "calling thread cannot access this object"，因此必须统一 marshal；已经显式走 UI 线程的处理函数（patch、revert、save）被二次包裹也是安全的。
-- **错误码**：工具处理函数抛 `ArgumentException` → JSON-RPC `-32602`（参数非法）；其他异常 → `-32603`（服务端错误）。
+- **线程模型**：`ExecuteTool` 用一把锁串行化所有工具调用。只读工具直接在 HTTP 工作线程上执行，通过 `IDsDocumentService`（内部有锁，可在非 UI 线程安全使用）枚举已加载模块，绝不触碰文档树（树节点是只能在 UI 线程访问的 `DispatcherObject`），因此大范围扫描不会卡住 dnSpy 界面。会修改元数据或触碰树/标签页的工具（`open_files`、IL 补丁/回滚/保存类工具、`rename_symbol_by_token`）会被调度到 WPF UI 线程执行，这样也与 AsmEditor 自身的编辑操作串行。
+- **错误码**：工具处理函数里抛出的异常（包括参数非法时抛的 `ArgumentException`）会作为 `isError: true` 的工具结果返回，并带上错误信息，方便模型看到后自行修正重试。JSON-RPC 错误只用于协议层面：未知方法 → `-32601`，`tools/call` / `resources/read` 参数格式不对 → `-32602`，其他 → `-32603`。
 - **日志**：`McpSettings.Log(...)` 总会写 UI 日志面板，只在 **Debug** 构建下额外写入 `D:\dnspy-mcp.log`。Release 构建完全靠内存日志，终端用户机器无需可写 `D:` 盘。
 
 ## 协议
 
-基于 [MCP](https://modelcontextprotocol.io/) `2024-11-05`，走 JSON-RPC 2.0。
+基于 [MCP](https://modelcontextprotocol.io/)，走 JSON-RPC 2.0。`initialize` 会协商协议版本：客户端请求的版本若是 `2025-06-18` / `2025-03-26` / `2024-11-05` 之一就原样返回，否则返回 `2025-06-18`。`serverInfo.version` 是扩展自身的发布版本号。
 
-支持的方法：`initialize`、`ping`、`tools/list`、`tools/call`、`resources/list`、`resources/read`，以及 `notifications/*`。
+支持的方法：`initialize`、`ping`、`tools/list`、`tools/call`、`resources/list`、`resources/templates/list`（始终为空）、`resources/read`，以及 `notifications/*`。其他方法一律返回 JSON-RPC `-32601`（Method not found）。
 
 ## CI / 发布
 
-- `.github/workflows/build.yml` — 每次 push/PR 都会构建两个 TFM。
-- `.github/workflows/release.yml` — 推送 `v*.*.*` 标签时构建 Release DLL 并附到 GitHub release。
+- `.github/workflows/build.yml` — 每次 push/PR 先检查 net48 依赖版本（`tests/check-host-deps.ps1`），再以 Debug 和 Release 构建两个 TFM。
+- `.github/workflows/release.yml` — 在 GitHub 上**发布** Release 时触发（也可对已有标签手动触发）；只推送标签不会触发。它会做同样的依赖检查，构建 dnSpy 和扩展（把标签去掉开头的 `v` 作为 `serverInfo.version`），再把一体包和单独的 DLL 附到该 Release 上。
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag v0.1.15
+git push origin v0.1.15
+gh release create v0.1.15 --title v0.1.15 --notes "..."   # 发布 Release 才会触发 release.yml
 ```
 
 ## 技术细节
@@ -406,13 +411,13 @@ git push origin v1.0.0
 - **BFS 路径查找**：`find_path_to_type` 对每个类型的字段和属性做广度优先搜索。
 - **反编译**：通过 `IDecompilerService` 使用 dnSpy 默认反编译器（默认 C#）。
 - **IL 写盘**：`save_assembly` 对从磁盘加载的模块调用 `((ModuleDefMD)module).NativeWrite(path, NativeModuleWriterOptions)`（保留本机 stub、Win32 资源、延迟加载导入、混合代码）；对内存里新建的模块调用 `module.Write(path, ModuleWriterOptions)`。落盘前先通过 `peImage as dnlib.PE.IInternalPEImage` 关闭内存映射 I/O — `dnSpy.AsmEditor` 里的 `IMmapDisabler` 是 internal，因此直接内联一行调用，避免把 AsmEditor 作为依赖。
-- **跨方法引用解析**：`patch_method_il` 里 `method:` / `field:` / `type:` 操作数的解析方式是遍历所有已加载模块按 `FullName` 精确匹配，再用 `new Importer(module, ImporterOptions.TryToUseDefs)` 导入到目标模块。
+- **跨方法引用解析**：`patch_method_il` 里 `method:` / `field:` / `type:` 操作数按 `FullName` 精确匹配解析（先在被补丁方法所在的模块里找，再找其他已加载模块），然后用 `new Importer(module, ImporterOptions.TryToUseDefs)` 导入到目标模块。
 
 ## 故障排查
 
 ### 设置页面出现但服务器不启动
 
-最常见原因：`IExtension` 那一半在 MEF 组合时失败（而 `IAppSettingsPageProvider`，即设置页面那一半仍能正常组合）。典型症状：MCP Server 设置页面存在并且能勾选 Enable Server，但点击 OK 没反应、日志里什么都没出现。根因通常是运行时依赖缺失 — 先看磁盘回退日志，并确认部署的 DLL 与 dnSpy 当前的 TFM 对应。
+最常见原因：`IExtension` 那一半在 MEF 组合时失败（而 `IAppSettingsPageProvider`，即设置页面那一半仍能正常组合）。典型症状：MCP Server 设置页面存在并且能勾选 Enable Server，但点击 OK 没反应、日志里什么都没出现。根因通常是运行时依赖缺失 — 先看磁盘回退日志（只有 Debug 构建会写，路径 `D:\dnspy-mcp.log`），并确认部署的 DLL 与 dnSpy 当前的 TFM 对应。
 
 ### 端口被占用
 

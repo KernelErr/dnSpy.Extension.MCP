@@ -31,7 +31,7 @@ From zero to "ask Claude about your assembly" in a few minutes:
 
 #### Analysis & navigation
 
-1. **list_assemblies** — list all loaded assemblies with metadata (`name_filter` substring/wildcard to cut through hundreds of Unity framework modules)
+1. **list_assemblies** — list all loaded assemblies with metadata and their on-disk `Path` (`name_filter` substring/wildcard to cut through hundreds of Unity framework modules). Every tool's `assembly_name` accepts the simple name, the full name, or that `Path`; when two loaded assemblies share a name (two copies or versions of one DLL) the name is refused as ambiguous, so pass the `Path`
 2. **get_assembly_info** — detailed info about a specific assembly (paginated namespaces)
 3. **list_types** — all types in an assembly or namespace; paginated (`page_size` override, `names_only` compact mode). Metadata rows include the TypeDef `token`. Includes nested + compiler-generated state machines by default (`is_nested` / `is_compiler_generated` flags; `include_nested=false` for top-level only). `base_type` filters to (transitive) subclasses, e.g. `base_type='MonoBehaviour'`
 4. **get_type_info** — TypeDef `token`, type generic-parameter tokens, fields/properties/events with their metadata tokens, and paginated methods. Full method rows include MethodDef, Param, and method GenericParam tokens. `compact` drops detail; `members_filter` keeps matching names
@@ -149,9 +149,9 @@ Reload the saved DLL in a fresh process and `AddOne(10)` returns **`51`** instea
 
 ### Caveats
 
-- **No Ctrl+Z.** `patch_method_il` does not route through dnSpy's undo stack. Use `revert_method_il` — the snapshot is taken the first time a given method is patched, and dropped after revert or after a successful save.
+- **No Ctrl+Z.** `patch_method_il` does not route through dnSpy's undo stack. Use `revert_method_il` — the snapshot is taken the first time a given method is patched and dropped after revert. It survives `save_assembly`, so you can still revert in memory (and save again) after writing to disk.
 - **dnSpy's in-memory view is not refreshed after save.** Reopen the assembly in dnSpy to see the saved state in the running instance.
-- **GAC paths are refused.** Saving `mscorlib` etc. returns a `-32602` error.
+- **GAC paths are refused.** Saving `mscorlib` etc. returns an error result.
 - **Instruction-level only.** Adding / removing locals or exception handlers is out of scope; `get_method_il` exposes them read-only.
 
 ## Installation
@@ -361,17 +361,21 @@ dotnet build -c Debug -f net10.0-windows
 
 ```
 dnSpy.Extension.MCP/
-├── .github/workflows/      GitHub Actions (build, release)
-├── McpServer.cs            HttpListener HTTP + SSE + Streamable HTTP + port fallback
-├── McpProtocol.cs          JSON-RPC 2.0 / MCP DTOs
-├── McpTools.cs             Analysis tools + MEF export + dispatch (sealed partial)
-├── McpTools.IL.cs          IL view/patch/revert/save + operand renderer & parser
-├── McpTools.Rename.cs      TypeDef-token class/enum rename + TypeRef/tree synchronization
-├── McpSettings.cs          Settings view-model + persistence + log (disk log in Debug only)
-├── McpSettingsPage.cs      IAppSettingsPageProvider for dnSpy settings dialog
-├── BepInExResources.cs     Embedded BepInEx docs (6 resources)
-├── TheExtension.cs         IExtension entry point; starts server on Loaded
-├── tests/fixtures/         TestIL.cs + build-fixture.ps1 + run-tests.ps1 (E2E harness)
+├── .github/workflows/          GitHub Actions (build, release)
+├── McpServer.cs                HttpListener HTTP + SSE + Streamable HTTP + port fallback
+├── McpProtocol.cs              JSON-RPC 2.0 / MCP DTOs
+├── McpTools.cs                 Analysis tools + MEF export + dispatch and threading (sealed partial)
+├── McpTools.IL.cs              IL view/patch/revert/save + operand renderer & parser
+├── McpTools.Strings.cs         String-literal and numeric-constant search
+├── McpTools.Xref.cs            find_callers / find_callees / find_references / find_overrides
+├── McpTools.RenameSymbol.cs    rename_symbol_by_token entry point + type/field/property/event/parameter handlers
+├── McpTools.Rename.cs          Method and class/enum rename cores + enum-member batch rename
+├── McpSettings.cs              Settings view-model + persistence + log (disk log in Debug only)
+├── McpSettingsPage.cs          IAppSettingsPageProvider for dnSpy settings dialog
+├── BepInExResources.cs         Embedded BepInEx docs (6 resources)
+├── TheExtension.cs             IExtension entry point; starts server on Loaded
+├── tests/check-host-deps.ps1   net48 dependency-version guard (run by CI)
+├── tests/fixtures/             TestIL.cs + build-fixture.ps1 + run-tests.ps1 (E2E harness)
 └── dnSpy.Extension.MCP.csproj
 ```
 
@@ -380,24 +384,25 @@ dnSpy.Extension.MCP/
 - **Targets**: `net48` and `net10.0-windows` (inherited from `DnSpyCommon.props`).
 - **Transport**: a single `HttpListener` serves the plain HTTP JSON-RPC, 2024-11-05 SSE, and 2025-03-26 Streamable HTTP paths on one port. Kestrel is intentionally **not** used — dnSpy's self-contained .NET bundle does not ship ASP.NET Core, so any `Microsoft.AspNetCore.*` reference would cause a silent `TypeLoadException` during MEF composition and the extension's `IExtension` part would never instantiate.
 - **MEF**: services use `[Export(typeof(T))]` + `[ImportingConstructor]`. Don't `new` up `McpServer` / `McpSettings` / `McpTools`.
-- **UI-thread marshalling**: every tool handler in `ExecuteTool` runs on the WPF dispatcher. `IDocumentTreeView` nodes are `DispatcherObject`s and throw "calling thread cannot access this object" if read from an HTTP worker, so marshalling is mandatory; handlers that already take the dispatcher path (patch, revert, save) double-wrap harmlessly.
-- **Error codes**: `ArgumentException` inside a tool handler → JSON-RPC `-32602` (invalid params); any other exception → `-32603` (internal error).
+- **Threading**: `ExecuteTool` serializes every tool call behind one lock. Read-only tools run on the HTTP worker thread and enumerate loaded modules through `IDsDocumentService` (lock-protected, safe off the UI thread) — never the document tree, whose nodes are UI-thread-only `DispatcherObject`s — so a long whole-program sweep doesn't freeze dnSpy. Tools that mutate metadata or touch the tree/tabs (`open_files`, the IL patch/revert/save tools, `rename_symbol_by_token`) are marshalled onto the WPF UI thread, which also serializes them with AsmEditor's own edits.
+- **Error codes**: an exception inside a tool handler — including the `ArgumentException` thrown for bad input — comes back as a tool result with `isError: true` and the message, so the model sees it and can retry. JSON-RPC errors are reserved for protocol-level failures: `-32601` for an unknown method, `-32602` for malformed `tools/call` / `resources/read` params, `-32603` for anything else.
 - **Logging**: `McpSettings.Log(...)` writes to the in-UI log pane always, and to `D:\dnspy-mcp.log` only in **Debug** builds. Release builds keep everything in-memory; no writable `D:` drive is required on end-user machines.
 
 ## Protocol
 
-Implements [MCP](https://modelcontextprotocol.io/) version `2024-11-05` over JSON-RPC 2.0.
+Implements [MCP](https://modelcontextprotocol.io/) over JSON-RPC 2.0. `initialize` negotiates the protocol version: it echoes the client's requested version when that is one of `2025-06-18` / `2025-03-26` / `2024-11-05`, and otherwise answers `2025-06-18`. `serverInfo.version` is the extension's release version.
 
-Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, and `notifications/*`.
+Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/templates/list` (always empty), `resources/read`, and `notifications/*`. Anything else gets JSON-RPC `-32601` (Method not found).
 
 ## CI / Release
 
-- `.github/workflows/build.yml` — builds both TFMs on every push/PR.
-- `.github/workflows/release.yml` — builds release DLLs and attaches them to the GitHub release on tag push (`v*.*.*`).
+- `.github/workflows/build.yml` — on every push/PR: checks the net48 dependency pins (`tests/check-host-deps.ps1`), then builds both TFMs in Debug and Release.
+- `.github/workflows/release.yml` — runs when a GitHub Release is **published** (or by manual dispatch for an existing tag); pushing a tag alone does not start it. It runs the same dependency check, builds dnSpy plus the extension (stamping the tag, minus its leading `v`, as `serverInfo.version`), and attaches the all-in-one zips and bare DLLs to that release.
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag v0.1.15
+git push origin v0.1.15
+gh release create v0.1.15 --title v0.1.15 --notes "..."   # publishing the release starts release.yml
 ```
 
 ## Technical details
@@ -406,13 +411,13 @@ git push origin v1.0.0
 - **BFS path finding**: `find_path_to_type` does breadth-first search over each type's fields and properties.
 - **Decompilation**: uses dnSpy's default decompiler (usually C#) via `IDecompilerService`.
 - **IL writing**: `save_assembly` calls `((ModuleDefMD)module).NativeWrite(path, NativeModuleWriterOptions)` for modules loaded from disk (preserves native stubs, Win32 resources, delay-loaded imports, mixed-mode code) and `module.Write(path, ModuleWriterOptions)` for freshly constructed modules. Memory-mapped I/O is disabled via `peImage as dnlib.PE.IInternalPEImage` before the write — the internal `IMmapDisabler` in `dnSpy.AsmEditor` is inlined to avoid depending on AsmEditor.
-- **Cross-method references** in `patch_method_il` operands (`method:`, `field:`, `type:`) are resolved by walking every loaded module for a `FullName` match and then imported into the destination module via `new Importer(module, ImporterOptions.TryToUseDefs)`.
+- **Cross-method references** in `patch_method_il` operands (`method:`, `field:`, `type:`) are resolved by `FullName` — first in the patched method's own module, then in every other loaded module — and imported into the destination module via `new Importer(module, ImporterOptions.TryToUseDefs)`.
 
 ## Troubleshooting
 
 ### Settings page shows but the server never starts
 
-Most commonly a MEF composition failure for the `IExtension` part while `IAppSettingsPageProvider` (the settings page) composes fine. Symptoms: the MCP Server page exists and lets you toggle Enable Server, but nothing happens on click and no log ever appears. Root cause is usually a missing runtime dependency — check the on-disk fallback log first, and make sure you deployed the DLL matching your dnSpy TFM.
+Most commonly a MEF composition failure for the `IExtension` part while `IAppSettingsPageProvider` (the settings page) composes fine. Symptoms: the MCP Server page exists and lets you toggle Enable Server, but nothing happens on click and no log ever appears. Root cause is usually a missing runtime dependency — check the on-disk fallback log first (Debug builds only write it, to `D:\dnspy-mcp.log`), and make sure you deployed the DLL matching your dnSpy TFM.
 
 ### Port already in use
 

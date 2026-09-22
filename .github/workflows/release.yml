@@ -64,6 +64,14 @@ jobs:
         shell: pwsh
         run: Move-Item -Path dnSpy.Extension.MCP -Destination dnSpy\Extensions\dnSpy.Extension.MCP -Force
 
+      # Same guard as build.yml, and it matters most here: the net48 DLL attached below is dropped
+      # into users' installed dnSpy, whose System.Text.Json it must match exactly (issue #21). Runs
+      # before the long dnSpy build so drift fails in seconds rather than after ten minutes.
+      - name: Check net48 dependency versions match dnSpy
+        shell: pwsh
+        working-directory: dnSpy\Extensions\dnSpy.Extension.MCP
+        run: .\tests\check-host-deps.ps1 -Restore
+
       # build.ps1 orchestrates: net48 build, net10 framework-dependent build,
       # and both win-x86 / win-x64 self-contained publishes, each with the
       # AppHostPatcher step — same script used for official dnSpy releases.
@@ -91,11 +99,15 @@ jobs:
           }
 
       # The MCP extension is not part of dnSpy.sln, so build.ps1 does not build
-      # it. Build it directly against the freshly-built Contracts DLLs.
+      # it. Build it directly against the freshly-built Contracts DLLs, stamping
+      # the release tag (minus its leading 'v') as the version MCP clients see in
+      # serverInfo.version.
       - name: Build MCP extension (both TFMs)
         shell: pwsh
         working-directory: dnSpy\Extensions\dnSpy.Extension.MCP
-        run: dotnet build -c Release
+        run: |
+          $version = '${{ steps.tag.outputs.name }}' -replace '^v', ''
+          dotnet build -c Release "-p:McpExtensionVersion=$version"
 
       - name: Bundle dnSpy + extension per TFM
         shell: pwsh

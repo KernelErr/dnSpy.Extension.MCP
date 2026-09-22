@@ -10,6 +10,12 @@
          test fixture (tests/fixtures/) and its generated obj/ out of our compile
          so building the extension doesn't pull in TestIL.cs / AssemblyInfo.cs. -->
     <DefaultItemExcludes>$(DefaultItemExcludes);tests/**</DefaultItemExcludes>
+    <!-- The extension's own version (not dnSpy's DnSpyAssemblyVersion), reported to MCP clients as
+         serverInfo.version via AssemblyInformationalVersion. release.yml passes
+         -p:McpExtensionVersion=<release tag without the leading v>; every other build reports the
+         dev placeholder. -->
+    <McpExtensionVersion Condition=" '$(McpExtensionVersion)' == '' ">0.0.0-dev</McpExtensionVersion>
+    <InformationalVersion>$(McpExtensionVersion)</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

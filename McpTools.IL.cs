@@ -2,8 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
-using System.Windows;
 using dnlib.DotNet;
 using dnlib.DotNet.Emit;
 
@@ -11,30 +11,18 @@ namespace dnSpy.Extension.MCP
 {
     // IL view / patch / save handlers. Lives as a partial so the MEF export + dispatch switch
     // stay in McpTools.cs; this file is just handlers + IL helpers.
+    //
+    // Threading is decided by ExecuteTool, not here: every handler runs under toolLock, and the
+    // mutating ones (patch / force_return / nop / revert / save) on the WPF UI thread so they
+    // serialize with AsmEditor's own Edit-Method-Body dialog, which mutates Body on that thread.
     sealed partial class McpTools
     {
-        // Snapshot store for revert_method_il. Populated lazily on first patch of a method.
-        readonly Dictionary<uint, CilBodySnapshot> ilSnapshots = new Dictionary<uint, CilBodySnapshot>();
-
-        // Serializes concurrent write ops (patch, revert, save) across HTTP clients. Reads do not
-        // take this lock — they run on HTTP threads like every other read handler. Writes also
-        // marshal through Application.Current.Dispatcher.Invoke to synchronize with any open
-        // AsmEditor Edit-Method-Body dialog (which mutates Body.Instructions on the UI thread).
-        readonly object ilEditLock = new object();
-
-        /// <summary>
-        /// Dispatches <paramref name="action"/> to the WPF UI thread if one exists, otherwise
-        /// runs it inline. Used for any handler that mutates dnlib state (<c>Body.Instructions</c>
-        /// lists, <c>ExceptionHandlers</c>, etc.) so we don't race AsmEditor's own UI-thread edits.
-        /// </summary>
-        T InvokeOnUiThread<T>(Func<T> action)
-        {
-            var app = Application.Current;
-            var dispatcher = app?.Dispatcher;
-            if (dispatcher == null || dispatcher.HasShutdownStarted || dispatcher.CheckAccess())
-                return action();
-            return dispatcher.Invoke(action);
-        }
+        // Snapshot store for revert_method_il, populated lazily on a method's first patch. Keyed by
+        // the MethodDef object, not its MDToken: tokens are only unique within a module, so a token
+        // key made a patch of one assembly's 0x06000123 hide the snapshot of another assembly's
+        // 0x06000123 — and revert then copied the first method's instructions into the second.
+        // The weak table compares keys by reference and doesn't keep a closed assembly alive.
+        readonly ConditionalWeakTable<MethodDef, CilBodySnapshot> ilSnapshots = new ConditionalWeakTable<MethodDef, CilBodySnapshot>();
 
         // ---------- list_methods ----------
 
@@ -56,50 +44,44 @@ namespace dnSpy.Extension.MCP
 
             var (offset, pageSize) = DecodeCursor(cursor);
 
-            // Marshal to the UI thread: IDocumentTreeView nodes are DispatcherObjects and
-            // throw "calling thread cannot access this object" when touched from an HTTP thread
-            // during / shortly after a tree mutation (e.g. the assembly we loaded via CLI arg).
-            return InvokeOnUiThread(() =>
+            var assembly = FindAssemblyByName(assemblyName);
+            if (assembly == null)
+                throw new ArgumentException($"Assembly not found: {assemblyName}");
+            var type = FindTypeInAssembly(assembly, typeFullName);
+            if (type == null)
+                throw new ArgumentException($"Type not found: {typeFullName}");
+
+            var methods = type.Methods.Select(m => new
             {
-                var assembly = FindAssemblyByName(assemblyName);
-                if (assembly == null)
-                    throw new ArgumentException($"Assembly not found: {assemblyName}");
-                var type = FindTypeInAssembly(assembly, typeFullName);
-                if (type == null)
-                    throw new ArgumentException($"Type not found: {typeFullName}");
+                name = m.Name.String,
+                token = m.MDToken.Raw,
+                signature = m.FullName,
+                return_type = m.ReturnType?.FullName ?? "void",
+                parameter_types = m.MethodSig == null
+                    ? new List<string>()
+                    : m.MethodSig.Params.Select(t => t?.FullName ?? "?").ToList(),
+                parameters = m.Parameters
+                    .Where(p => p.IsNormalMethodParameter)
+                    .Select(p => new {
+                        name = p.Name,
+                        type = p.Type?.FullName ?? "?",
+                        token = p.ParamDef?.MDToken.Raw
+                    })
+                    .ToList(),
+                generic_parameters = m.GenericParameters
+                    .Select(p => new {
+                        name = p.Name.String,
+                        token = p.MDToken.Raw,
+                        number = p.Number
+                    })
+                    .ToList(),
+                is_static = m.IsStatic,
+                is_virtual = m.IsVirtual,
+                is_abstract = m.IsAbstract,
+                has_body = m.HasBody
+            }).ToList();
 
-                var methods = type.Methods.Select(m => new
-                {
-                    name = m.Name.String,
-                    token = m.MDToken.Raw,
-                    signature = m.FullName,
-                    return_type = m.ReturnType?.FullName ?? "void",
-                    parameter_types = m.MethodSig == null
-                        ? new List<string>()
-                        : m.MethodSig.Params.Select(t => t?.FullName ?? "?").ToList(),
-                    parameters = m.Parameters
-                        .Where(p => p.IsNormalMethodParameter)
-                        .Select(p => new {
-                            name = p.Name,
-                            type = p.Type?.FullName ?? "?",
-                            token = p.ParamDef?.MDToken.Raw
-                        })
-                        .ToList(),
-                    generic_parameters = m.GenericParameters
-                        .Select(p => new {
-                            name = p.Name.String,
-                            token = p.MDToken.Raw,
-                            number = p.Number
-                        })
-                        .ToList(),
-                    is_static = m.IsStatic,
-                    is_virtual = m.IsVirtual,
-                    is_abstract = m.IsAbstract,
-                    has_body = m.HasBody
-                }).ToList();
-
-                return CreatePaginatedResponse(methods, offset, pageSize);
-            });
+            return CreatePaginatedResponse(methods, offset, pageSize);
         }
 
         // ---------- get_method_il ----------
@@ -122,31 +104,28 @@ namespace dnSpy.Extension.MCP
             var parameterTypes = ReadStringArray(arguments, "parameter_types");
             var methodToken = ReadOptionalUInt(arguments, "method_token");
 
-            return InvokeOnUiThread(() =>
+            var assembly = FindAssemblyByName(assemblyName);
+            if (assembly == null)
+                throw new ArgumentException($"Assembly not found: {assemblyName}");
+            var type = FindTypeInAssembly(assembly, typeFullName);
+            if (type == null)
+                throw new ArgumentException($"Type not found: {typeFullName}");
+
+            var method = FindMethod(type, methodName, parameterTypes, methodToken);
+            if (!method.HasBody || method.Body == null)
+                throw new ArgumentException($"Method {DescribeSignature(method)} has no IL body (abstract / extern / P/Invoke).");
+
+            var body = method.Body;
+            body.UpdateInstructionOffsets();
+
+            var result = SerializeBody(method, body);
+            var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
+            return new CallToolResult
             {
-                var assembly = FindAssemblyByName(assemblyName);
-                if (assembly == null)
-                    throw new ArgumentException($"Assembly not found: {assemblyName}");
-                var type = FindTypeInAssembly(assembly, typeFullName);
-                if (type == null)
-                    throw new ArgumentException($"Type not found: {typeFullName}");
-
-                var method = FindMethod(type, methodName, parameterTypes, methodToken);
-                if (!method.HasBody || method.Body == null)
-                    throw new ArgumentException($"Method {DescribeSignature(method)} has no IL body (abstract / extern / P/Invoke).");
-
-                var body = method.Body;
-                body.UpdateInstructionOffsets();
-
-                var result = SerializeBody(method, body);
-                var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
-                return new CallToolResult
-                {
-                    Content = new List<ToolContent> {
-                        new ToolContent { Text = json }
-                    }
-                };
-            });
+                Content = new List<ToolContent> {
+                    new ToolContent { Text = json }
+                }
+            };
         }
 
         // ---------- patch_method_il ----------
@@ -173,87 +152,81 @@ namespace dnSpy.Extension.MCP
 
             var edits = ParseEditsList(editsObj);
 
-            return InvokeOnUiThread(() =>
+            var assembly = FindAssemblyByName(assemblyName);
+            if (assembly == null)
+                throw new ArgumentException($"Assembly not found: {assemblyName}");
+            var type = FindTypeInAssembly(assembly, typeFullName);
+            if (type == null)
+                throw new ArgumentException($"Type not found: {typeFullName}");
+
+            var method = FindMethod(type, methodName, parameterTypes, methodToken);
+            if (!method.HasBody || method.Body == null)
+                throw new ArgumentException($"Method {DescribeSignature(method)} has no IL body.");
+            var body = method.Body;
+            var module = method.Module ?? assembly.ManifestModule;
+            if (module == null)
+                throw new ArgumentException("Cannot resolve owning module for method");
+
+            // Snapshot on first patch so revert_method_il can undo.
+            if (!ilSnapshots.TryGetValue(method, out _))
+                ilSnapshots.Add(method, Snapshot(body));
+
+            // Resolve all edits against the pre-batch instruction list (by reference,
+            // so inserts/deletes don't shift resolutions).
+            var originalList = body.Instructions.ToList();
+            var importer = new Importer(module, ImporterOptions.TryToUseDefs);
+            var resolved = edits.Select(e => ResolveEdit(e, originalList, body, method, importer)).ToList();
+
+            // Apply in order. For replace, mutate the existing Instruction so branch/switch
+            // targets that reference it still resolve correctly.
+            foreach (var e in resolved)
             {
-                lock (ilEditLock)
+                switch (e.Op)
                 {
-                    var assembly = FindAssemblyByName(assemblyName);
-                    if (assembly == null)
-                        throw new ArgumentException($"Assembly not found: {assemblyName}");
-                    var type = FindTypeInAssembly(assembly, typeFullName);
-                    if (type == null)
-                        throw new ArgumentException($"Type not found: {typeFullName}");
-
-                    var method = FindMethod(type, methodName, parameterTypes, methodToken);
-                    if (!method.HasBody || method.Body == null)
-                        throw new ArgumentException($"Method {DescribeSignature(method)} has no IL body.");
-                    var body = method.Body;
-                    var module = method.Module ?? assembly.ManifestModule;
-                    if (module == null)
-                        throw new ArgumentException("Cannot resolve owning module for method");
-
-                    // Snapshot on first patch so revert_method_il can undo.
-                    if (!ilSnapshots.ContainsKey(method.MDToken.Raw))
-                        ilSnapshots[method.MDToken.Raw] = Snapshot(body);
-
-                    // Resolve all edits against the pre-batch instruction list (by reference,
-                    // so inserts/deletes don't shift resolutions).
-                    var originalList = body.Instructions.ToList();
-                    var importer = new Importer(module, ImporterOptions.TryToUseDefs);
-                    var resolved = edits.Select(e => ResolveEdit(e, originalList, body, method, importer)).ToList();
-
-                    // Apply in order. For replace, mutate the existing Instruction so branch/switch
-                    // targets that reference it still resolve correctly.
-                    foreach (var e in resolved)
-                    {
-                        switch (e.Op)
+                    case "replace":
+                        if (e.Target == null)
+                            throw new ArgumentException($"replace index {e.Index} out of range");
+                        e.Target.OpCode = e.NewOpCode!;
+                        e.Target.Operand = e.NewOperand;
+                        break;
+                    case "insert":
+                        var newInstr = new Instruction(e.NewOpCode!) { Operand = e.NewOperand };
+                        if (e.Target == null)
+                            body.Instructions.Add(newInstr);  // index == Count → append
+                        else
                         {
-                            case "replace":
-                                if (e.Target == null)
-                                    throw new ArgumentException($"replace index {e.Index} out of range");
-                                e.Target.OpCode = e.NewOpCode!;
-                                e.Target.Operand = e.NewOperand;
-                                break;
-                            case "insert":
-                                var newInstr = new Instruction(e.NewOpCode!) { Operand = e.NewOperand };
-                                if (e.Target == null)
-                                    body.Instructions.Add(newInstr);  // index == Count → append
-                                else
-                                {
-                                    var idx = body.Instructions.IndexOf(e.Target);
-                                    if (idx < 0)
-                                        throw new ArgumentException("insert target no longer in body (was it deleted earlier in this batch?)");
-                                    body.Instructions.Insert(idx, newInstr);
-                                }
-                                break;
-                            case "delete":
-                                if (e.Target == null || !body.Instructions.Remove(e.Target))
-                                    throw new ArgumentException($"delete index {e.Index} out of range or already removed");
-                                break;
-                            case "set_init_locals":
-                                body.InitLocals = e.BoolValue ?? body.InitLocals;
-                                break;
-                            default:
-                                throw new ArgumentException($"Unknown edit op: {e.Op}");
+                            var idx = body.Instructions.IndexOf(e.Target);
+                            if (idx < 0)
+                                throw new ArgumentException("insert target no longer in body (was it deleted earlier in this batch?)");
+                            body.Instructions.Insert(idx, newInstr);
                         }
-                    }
-
-                    if (optimizeMacros)
-                        body.Instructions.OptimizeMacros();
-
-                    body.UpdateInstructionOffsets();
-
-                    var projection = SerializeBody(method, body);
-                    projection["edits_applied"] = resolved.Count;
-                    var json = JsonSerializer.Serialize(projection, new JsonSerializerOptions { WriteIndented = true });
-                    return new CallToolResult
-                    {
-                        Content = new List<ToolContent> {
-                            new ToolContent { Text = json }
-                        }
-                    };
+                        break;
+                    case "delete":
+                        if (e.Target == null || !body.Instructions.Remove(e.Target))
+                            throw new ArgumentException($"delete index {e.Index} out of range or already removed");
+                        break;
+                    case "set_init_locals":
+                        body.InitLocals = e.BoolValue ?? body.InitLocals;
+                        break;
+                    default:
+                        throw new ArgumentException($"Unknown edit op: {e.Op}");
                 }
-            });
+            }
+
+            if (optimizeMacros)
+                body.Instructions.OptimizeMacros();
+
+            body.UpdateInstructionOffsets();
+
+            var projection = SerializeBody(method, body);
+            projection["edits_applied"] = resolved.Count;
+            var json = JsonSerializer.Serialize(projection, new JsonSerializerOptions { WriteIndented = true });
+            return new CallToolResult
+            {
+                Content = new List<ToolContent> {
+                    new ToolContent { Text = json }
+                }
+            };
         }
 
         // ---------- revert_method_il ----------
@@ -275,56 +248,50 @@ namespace dnSpy.Extension.MCP
             var parameterTypes = ReadStringArray(arguments, "parameter_types");
             var methodToken = ReadOptionalUInt(arguments, "method_token");
 
-            return InvokeOnUiThread(() =>
+            var assembly = FindAssemblyByName(assemblyName);
+            if (assembly == null)
+                throw new ArgumentException($"Assembly not found: {assemblyName}");
+            var type = FindTypeInAssembly(assembly, typeFullName);
+            if (type == null)
+                throw new ArgumentException($"Type not found: {typeFullName}");
+
+            var method = FindMethod(type, methodName, parameterTypes, methodToken);
+            if (!ilSnapshots.TryGetValue(method, out var snap))
+                throw new ArgumentException($"No pending patch to revert for {DescribeSignature(method)}");
+            if (!method.HasBody || method.Body == null)
+                throw new ArgumentException($"Method {DescribeSignature(method)} has no IL body anymore.");
+            var body = method.Body;
+
+            body.Instructions.Clear();
+            foreach (var s in snap.Instructions)
             {
-                lock (ilEditLock)
-                {
-                    var assembly = FindAssemblyByName(assemblyName);
-                    if (assembly == null)
-                        throw new ArgumentException($"Assembly not found: {assemblyName}");
-                    var type = FindTypeInAssembly(assembly, typeFullName);
-                    if (type == null)
-                        throw new ArgumentException($"Type not found: {typeFullName}");
+                // Un-mutate the Instruction object back to its pre-patch state — this
+                // preserves reference identity for branch/switch operands elsewhere in
+                // the body so targets that were pointing at this instruction still do.
+                s.Instr.OpCode = s.OpCode;
+                s.Instr.Operand = s.Operand;
+                body.Instructions.Add(s.Instr);
+            }
+            body.Variables.Clear();
+            foreach (var v in snap.Variables) body.Variables.Add(v);
+            body.ExceptionHandlers.Clear();
+            foreach (var eh in snap.ExceptionHandlers) body.ExceptionHandlers.Add(eh);
+            body.MaxStack = snap.MaxStack;
+            body.InitLocals = snap.InitLocals;
+            body.KeepOldMaxStack = snap.KeepOldMaxStack;
+            body.UpdateInstructionOffsets();
 
-                    var method = FindMethod(type, methodName, parameterTypes, methodToken);
-                    if (!ilSnapshots.TryGetValue(method.MDToken.Raw, out var snap))
-                        throw new ArgumentException($"No pending patch to revert for {DescribeSignature(method)}");
-                    if (!method.HasBody || method.Body == null)
-                        throw new ArgumentException($"Method {DescribeSignature(method)} has no IL body anymore.");
-                    var body = method.Body;
+            ilSnapshots.Remove(method);
 
-                    body.Instructions.Clear();
-                    foreach (var s in snap.Instructions)
-                    {
-                        // Un-mutate the Instruction object back to its pre-patch state — this
-                        // preserves reference identity for branch/switch operands elsewhere in
-                        // the body so targets that were pointing at this instruction still do.
-                        s.Instr.OpCode = s.OpCode;
-                        s.Instr.Operand = s.Operand;
-                        body.Instructions.Add(s.Instr);
-                    }
-                    body.Variables.Clear();
-                    foreach (var v in snap.Variables) body.Variables.Add(v);
-                    body.ExceptionHandlers.Clear();
-                    foreach (var eh in snap.ExceptionHandlers) body.ExceptionHandlers.Add(eh);
-                    body.MaxStack = snap.MaxStack;
-                    body.InitLocals = snap.InitLocals;
-                    body.KeepOldMaxStack = snap.KeepOldMaxStack;
-                    body.UpdateInstructionOffsets();
-
-                    ilSnapshots.Remove(method.MDToken.Raw);
-
-                    var projection = SerializeBody(method, body);
-                    projection["reverted"] = true;
-                    var json = JsonSerializer.Serialize(projection, new JsonSerializerOptions { WriteIndented = true });
-                    return new CallToolResult
-                    {
-                        Content = new List<ToolContent> {
-                            new ToolContent { Text = json }
-                        }
-                    };
+            var projection = SerializeBody(method, body);
+            projection["reverted"] = true;
+            var json = JsonSerializer.Serialize(projection, new JsonSerializerOptions { WriteIndented = true });
+            return new CallToolResult
+            {
+                Content = new List<ToolContent> {
+                    new ToolContent { Text = json }
                 }
-            });
+            };
         }
 
         // ---------- force_return / nop_method (high-level body rewrites) ----------
@@ -359,52 +326,46 @@ namespace dnSpy.Extension.MCP
             // nop_method ignores 'value' (always default); force_return reads it (default if omitted).
             object? valueRaw = nop ? "default" : (arguments.TryGetValue("value", out var vr) ? vr : null);
 
-            return InvokeOnUiThread(() =>
+            var assembly = FindAssemblyByName(assemblyName);
+            if (assembly == null)
+                throw new ArgumentException($"Assembly not found: {assemblyName}");
+            var type = FindTypeInAssembly(assembly, typeFullName);
+            if (type == null)
+                throw new ArgumentException($"Type not found: {typeFullName}");
+
+            var method = FindMethod(type, methodName, parameterTypes, methodToken);
+            if (!method.HasBody || method.Body == null)
+                throw new ArgumentException($"Method {DescribeSignature(method)} has no IL body (abstract/extern?); cannot rewrite.");
+            var body = method.Body;
+
+            // Build the new body first so a bad value/return-type errors before we touch anything.
+            var (instrs, local, describe) = BuildReturnSequence(method, valueRaw, nop);
+
+            // Snapshot on first rewrite so revert_method_il can undo (shared with patch_method_il).
+            if (!ilSnapshots.TryGetValue(method, out _))
+                ilSnapshots.Add(method, Snapshot(body));
+
+            body.ExceptionHandlers.Clear();
+            body.Variables.Clear();
+            if (local != null)
             {
-                lock (ilEditLock)
-                {
-                    var assembly = FindAssemblyByName(assemblyName);
-                    if (assembly == null)
-                        throw new ArgumentException($"Assembly not found: {assemblyName}");
-                    var type = FindTypeInAssembly(assembly, typeFullName);
-                    if (type == null)
-                        throw new ArgumentException($"Type not found: {typeFullName}");
+                body.Variables.Add(local);
+                body.InitLocals = true;
+            }
+            body.Instructions.Clear();
+            foreach (var ins in instrs)
+                body.Instructions.Add(ins);
+            body.KeepOldMaxStack = false;   // let the writer recompute MaxStack on save
+            body.UpdateInstructionOffsets();
 
-                    var method = FindMethod(type, methodName, parameterTypes, methodToken);
-                    if (!method.HasBody || method.Body == null)
-                        throw new ArgumentException($"Method {DescribeSignature(method)} has no IL body (abstract/extern?); cannot rewrite.");
-                    var body = method.Body;
-
-                    // Build the new body first so a bad value/return-type errors before we touch anything.
-                    var (instrs, local, describe) = BuildReturnSequence(method, valueRaw, nop);
-
-                    // Snapshot on first rewrite so revert_method_il can undo (shared with patch_method_il).
-                    if (!ilSnapshots.ContainsKey(method.MDToken.Raw))
-                        ilSnapshots[method.MDToken.Raw] = Snapshot(body);
-
-                    body.ExceptionHandlers.Clear();
-                    body.Variables.Clear();
-                    if (local != null)
-                    {
-                        body.Variables.Add(local);
-                        body.InitLocals = true;
-                    }
-                    body.Instructions.Clear();
-                    foreach (var ins in instrs)
-                        body.Instructions.Add(ins);
-                    body.KeepOldMaxStack = false;   // let the writer recompute MaxStack on save
-                    body.UpdateInstructionOffsets();
-
-                    var projection = SerializeBody(method, body);
-                    projection[nop ? "nopped" : "forced_return"] = true;
-                    projection["return_behavior"] = describe;
-                    var json = JsonSerializer.Serialize(projection, new JsonSerializerOptions { WriteIndented = true });
-                    return new CallToolResult
-                    {
-                        Content = new List<ToolContent> { new ToolContent { Text = json } }
-                    };
-                }
-            });
+            var projection = SerializeBody(method, body);
+            projection[nop ? "nopped" : "forced_return"] = true;
+            projection["return_behavior"] = describe;
+            var json = JsonSerializer.Serialize(projection, new JsonSerializerOptions { WriteIndented = true });
+            return new CallToolResult
+            {
+                Content = new List<ToolContent> { new ToolContent { Text = json } }
+            };
         }
 
         enum RetKind { Default, Null, Bool, Int, Float }
@@ -612,100 +573,94 @@ namespace dnSpy.Extension.MCP
                     outputPath = null;
             }
 
-            return InvokeOnUiThread(() =>
+            var assembly = FindAssemblyByName(assemblyName);
+            if (assembly == null)
+                throw new ArgumentException($"Assembly not found: {assemblyName}");
+            var module = assembly.ManifestModule ?? assembly.Modules.FirstOrDefault();
+            if (module == null)
+                throw new ArgumentException($"Assembly {assemblyName} has no modules");
+
+            // Locate the loaded document for this module's filename so we can read
+            // the on-disk Location and disable its memory-mapped file handle.
+            var ownerDoc = documentTreeView.DocumentService.GetDocuments()
+                .FirstOrDefault(d => d.AssemblyDef == assembly)
+                ?? documentTreeView.DocumentService.GetDocuments()
+                    .FirstOrDefault(d => d.ModuleDef == module);
+
+            var originalPath = ownerDoc?.Filename;
+            if (string.IsNullOrWhiteSpace(outputPath))
             {
-                lock (ilEditLock)
-                {
-                    var assembly = FindAssemblyByName(assemblyName);
-                    if (assembly == null)
-                        throw new ArgumentException($"Assembly not found: {assemblyName}");
-                    var module = assembly.ManifestModule ?? assembly.Modules.FirstOrDefault();
-                    if (module == null)
-                        throw new ArgumentException($"Assembly {assemblyName} has no modules");
+                if (string.IsNullOrWhiteSpace(originalPath))
+                    throw new ArgumentException($"Assembly {assemblyName} has no on-disk location; pass output_path explicitly.");
+                outputPath = originalPath;
+            }
 
-                    // Locate the loaded document for this module's filename so we can read
-                    // the on-disk Location and disable its memory-mapped file handle.
-                    var ownerDoc = documentTreeView.DocumentService.GetDocuments()
-                        .FirstOrDefault(d => d.AssemblyDef == assembly)
-                        ?? documentTreeView.DocumentService.GetDocuments()
-                            .FirstOrDefault(d => d.ModuleDef == module);
+            outputPath = System.IO.Path.GetFullPath(outputPath!);
 
-                    var originalPath = ownerDoc?.Filename;
-                    if (string.IsNullOrWhiteSpace(outputPath))
-                    {
-                        if (string.IsNullOrWhiteSpace(originalPath))
-                            throw new ArgumentException($"Assembly {assemblyName} has no on-disk location; pass output_path explicitly.");
-                        outputPath = originalPath;
-                    }
+            if (!string.IsNullOrEmpty(originalPath) && dnSpy.Contracts.Utilities.GacInfo.IsGacPath(originalPath!))
+                throw new ArgumentException("cannot save GAC assembly (refused by policy)");
+            if (dnSpy.Contracts.Utilities.GacInfo.IsGacPath(outputPath))
+                throw new ArgumentException("cannot save to a GAC path (refused by policy)");
 
-                    outputPath = System.IO.Path.GetFullPath(outputPath!);
+            // Backup-then-overwrite when we're writing to an existing file.
+            string? backupPath = null;
+            bool overwritingOriginal = !string.IsNullOrEmpty(originalPath) &&
+                string.Equals(System.IO.Path.GetFullPath(originalPath!), outputPath, StringComparison.OrdinalIgnoreCase);
+            if (overwritingOriginal && System.IO.File.Exists(outputPath))
+            {
+                var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+                backupPath = outputPath + "." + stamp + ".bak";
+                System.IO.File.Copy(outputPath, backupPath, overwrite: false);
+                settings.Log($"Backed up {outputPath} → {System.IO.Path.GetFileName(backupPath)}");
+            }
 
-                    if (!string.IsNullOrEmpty(originalPath) && dnSpy.Contracts.Utilities.GacInfo.IsGacPath(originalPath!))
-                        throw new ArgumentException("cannot save GAC assembly (refused by policy)");
-                    if (dnSpy.Contracts.Utilities.GacInfo.IsGacPath(outputPath))
-                        throw new ArgumentException("cannot save to a GAC path (refused by policy)");
+            // Disable memory-mapped I/O on every loaded document whose filename matches
+            // the target. Matches AsmEditor's MmapDisabler pattern — a single file may
+            // be referenced by more than one IDsDocument (main file, resources, etc.).
+            foreach (var doc in documentTreeView.DocumentService.GetDocuments())
+            {
+                if (string.IsNullOrEmpty(doc.Filename))
+                    continue;
+                if (!string.Equals(doc.Filename, outputPath, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                (doc.PEImage as dnlib.PE.IInternalPEImage)?.UnsafeDisableMemoryMappedIO();
+            }
 
-                    // Backup-then-overwrite when we're writing to an existing file.
-                    string? backupPath = null;
-                    bool overwritingOriginal = !string.IsNullOrEmpty(originalPath) &&
-                        string.Equals(System.IO.Path.GetFullPath(originalPath!), outputPath, StringComparison.OrdinalIgnoreCase);
-                    if (overwritingOriginal && System.IO.File.Exists(outputPath))
-                    {
-                        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-                        backupPath = outputPath + "." + stamp + ".bak";
-                        System.IO.File.Copy(outputPath, backupPath, overwrite: false);
-                        settings.Log($"Backed up {outputPath} → {System.IO.Path.GetFileName(backupPath)}");
-                    }
+            // Write. ModuleDefMD (loaded from disk) uses NativeWrite so native stubs,
+            // Win32 resources, delay-loaded imports and mixed-mode code survive.
+            // Freshly-constructed modules go through plain Write.
+            if (module is ModuleDefMD md)
+            {
+                var opts = new dnlib.DotNet.Writer.NativeModuleWriterOptions(md, optimizeImageSize: true);
+                opts.MetadataOptions.Flags |= dnlib.DotNet.Writer.MetadataFlags.RoslynSortInterfaceImpl;
+                md.NativeWrite(outputPath, opts);
+            }
+            else
+            {
+                var opts = new dnlib.DotNet.Writer.ModuleWriterOptions(module);
+                opts.MetadataOptions.Flags |= dnlib.DotNet.Writer.MetadataFlags.RoslynSortInterfaceImpl;
+                module.Write(outputPath, opts);
+            }
 
-                    // Disable memory-mapped I/O on every loaded document whose filename matches
-                    // the target. Matches AsmEditor's MmapDisabler pattern — a single file may
-                    // be referenced by more than one IDsDocument (main file, resources, etc.).
-                    foreach (var doc in documentTreeView.DocumentService.GetDocuments())
-                    {
-                        if (string.IsNullOrEmpty(doc.Filename))
-                            continue;
-                        if (!string.Equals(doc.Filename, outputPath, StringComparison.OrdinalIgnoreCase))
-                            continue;
-                        (doc.PEImage as dnlib.PE.IInternalPEImage)?.UnsafeDisableMemoryMappedIO();
-                    }
+            long bytes = 0;
+            try { bytes = new System.IO.FileInfo(outputPath).Length; } catch { /* ignore */ }
 
-                    // Write. ModuleDefMD (loaded from disk) uses NativeWrite so native stubs,
-                    // Win32 resources, delay-loaded imports and mixed-mode code survive.
-                    // Freshly-constructed modules go through plain Write.
-                    if (module is ModuleDefMD md)
-                    {
-                        var opts = new dnlib.DotNet.Writer.NativeModuleWriterOptions(md, optimizeImageSize: true);
-                        opts.MetadataOptions.Flags |= dnlib.DotNet.Writer.MetadataFlags.RoslynSortInterfaceImpl;
-                        md.NativeWrite(outputPath, opts);
-                    }
-                    else
-                    {
-                        var opts = new dnlib.DotNet.Writer.ModuleWriterOptions(module);
-                        opts.MetadataOptions.Flags |= dnlib.DotNet.Writer.MetadataFlags.RoslynSortInterfaceImpl;
-                        module.Write(outputPath, opts);
-                    }
+            settings.Log($"save_assembly: {assemblyName} → {outputPath} ({bytes} bytes)" + (backupPath != null ? $", backup {System.IO.Path.GetFileName(backupPath)}" : ""));
 
-                    long bytes = 0;
-                    try { bytes = new System.IO.FileInfo(outputPath).Length; } catch { /* ignore */ }
-
-                    settings.Log($"save_assembly: {assemblyName} → {outputPath} ({bytes} bytes)" + (backupPath != null ? $", backup {System.IO.Path.GetFileName(backupPath)}" : ""));
-
-                    var result = new Dictionary<string, object?>
-                    {
-                        ["saved_to"] = outputPath,
-                        ["bytes_written"] = bytes,
-                        ["backup_path"] = backupPath,
-                        ["note"] = "dnSpy's in-memory view is NOT refreshed. Reopen the assembly in dnSpy to see the saved state."
-                    };
-                    var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
-                    return new CallToolResult
-                    {
-                        Content = new List<ToolContent> {
-                            new ToolContent { Text = json }
-                        }
-                    };
+            var result = new Dictionary<string, object?>
+            {
+                ["saved_to"] = outputPath,
+                ["bytes_written"] = bytes,
+                ["backup_path"] = backupPath,
+                ["note"] = "dnSpy's in-memory view is NOT refreshed. Reopen the assembly in dnSpy to see the saved state."
+            };
+            var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
+            return new CallToolResult
+            {
+                Content = new List<ToolContent> {
+                    new ToolContent { Text = json }
                 }
-            });
+            };
         }
 
         // ---------- edit parsing + resolving ----------
@@ -922,13 +877,13 @@ namespace dnSpy.Extension.MCP
                     }
                 case OperandType.InlineMethod:
                     ExpectTag(tag, opcode, "method");
-                    return ResolveMethodRef(rest, importer);
+                    return ResolveMethodRef(rest, importer, method.Module);
                 case OperandType.InlineField:
                     ExpectTag(tag, opcode, "field");
-                    return ResolveFieldRef(rest, importer);
+                    return ResolveFieldRef(rest, importer, method.Module);
                 case OperandType.InlineType:
                     ExpectTag(tag, opcode, "type");
-                    return ResolveTypeRef(rest, importer);
+                    return ResolveTypeRef(rest, importer, method.Module);
                 case OperandType.InlineTok:
                     ExpectTag(tag, opcode, "token");
                     // rest is e.g. "method:...", "field:...", "type:..."
@@ -939,9 +894,9 @@ namespace dnSpy.Extension.MCP
                     var innerRest = rest.Substring(tokColon + 1);
                     return innerTag switch
                     {
-                        "method" => (object)ResolveMethodRef(innerRest, importer),
-                        "field" => ResolveFieldRef(innerRest, importer),
-                        "type" => ResolveTypeRef(innerRest, importer),
+                        "method" => (object)ResolveMethodRef(innerRest, importer, method.Module),
+                        "field" => ResolveFieldRef(innerRest, importer, method.Module),
+                        "type" => ResolveTypeRef(innerRest, importer, method.Module),
                         _ => throw new ArgumentException($"unknown token inner tag '{innerTag}'")
                     };
                 case OperandType.InlineBrTarget:
@@ -999,13 +954,26 @@ namespace dnSpy.Extension.MCP
 
         // ---------- member reference resolvers ----------
 
-        IMethod ResolveMethodRef(string fullName, Importer importer)
+        // Loaded modules with the patched method's own module first, so an operand naming one of its
+        // own members resolves to that definition (imported as a direct Def token) rather than to a
+        // same-named copy in another loaded assembly (imported as a MemberRef that points back at
+        // the patched assembly through an AssemblyRef to itself).
+        IEnumerable<ModuleDef> OperandSearchOrder(ModuleDef? own)
+        {
+            if (own != null)
+                yield return own;
+            foreach (var module in GetLoadedModules())
+            {
+                if (module != own)
+                    yield return module;
+            }
+        }
+
+        IMethod ResolveMethodRef(string fullName, Importer importer, ModuleDef? own)
         {
             var needle = fullName.Trim();
-            foreach (var mnode in documentTreeView.GetAllModuleNodes())
+            foreach (var mod in OperandSearchOrder(own))
             {
-                var mod = mnode.Document?.ModuleDef;
-                if (mod == null) continue;
                 foreach (var t in mod.GetTypes())
                 {
                     foreach (var m in t.Methods)
@@ -1018,13 +986,11 @@ namespace dnSpy.Extension.MCP
             throw new ArgumentException($"No method with FullName '{needle}' in any loaded assembly. Copy the 'signature' field from list_methods.");
         }
 
-        IField ResolveFieldRef(string fullName, Importer importer)
+        IField ResolveFieldRef(string fullName, Importer importer, ModuleDef? own)
         {
             var needle = fullName.Trim();
-            foreach (var mnode in documentTreeView.GetAllModuleNodes())
+            foreach (var mod in OperandSearchOrder(own))
             {
-                var mod = mnode.Document?.ModuleDef;
-                if (mod == null) continue;
                 foreach (var t in mod.GetTypes())
                 {
                     foreach (var f in t.Fields)
@@ -1037,13 +1003,11 @@ namespace dnSpy.Extension.MCP
             throw new ArgumentException($"No field with FullName '{needle}' in any loaded assembly. Copy from get_type_info.Fields[].");
         }
 
-        ITypeDefOrRef ResolveTypeRef(string fullName, Importer importer)
+        ITypeDefOrRef ResolveTypeRef(string fullName, Importer importer, ModuleDef? own)
         {
             var needle = fullName.Trim();
-            foreach (var mnode in documentTreeView.GetAllModuleNodes())
+            foreach (var mod in OperandSearchOrder(own))
             {
-                var mod = mnode.Document?.ModuleDef;
-                if (mod == null) continue;
                 foreach (var t in mod.GetTypes())
                 {
                     if (string.Equals(t.FullName, needle, StringComparison.Ordinal))
@@ -1126,7 +1090,7 @@ namespace dnSpy.Extension.MCP
                 ["local_var_sig_tok"] = body.LocalVarSigTok,
                 ["locals"] = locals,
                 ["exception_handlers"] = handlers,
-                ["has_pending_patch"] = ilSnapshots.ContainsKey(method.MDToken.Raw)
+                ["has_pending_patch"] = ilSnapshots.TryGetValue(method, out _)
             };
         }
 

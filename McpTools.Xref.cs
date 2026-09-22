@@ -211,7 +211,7 @@ namespace dnSpy.Extension.MCP
                 // or a type implementing an interface method. dnSpy's Analyze lists both; which one
                 // applies is decided by whether the target's declaring type is an interface.
                 bool targetIsInterface = targetType.IsInterface;
-                foreach (var module in AllLoadedModules())
+                foreach (var module in GetLoadedModules())
                 {
                     var asm = module.Assembly?.Name.String ?? "Unknown";
                     foreach (var type in module.GetTypes())
@@ -485,7 +485,7 @@ namespace dnSpy.Extension.MCP
         List<object> ScanForReferences(Func<Instruction, string?> probe)
         {
             var results = new List<object>();
-            foreach (var module in AllLoadedModules())
+            foreach (var module in GetLoadedModules())
             {
                 var moduleAsmName = module.Assembly?.Name.String ?? "Unknown";
                 foreach (var type in module.GetTypes())
@@ -530,12 +530,6 @@ namespace dnSpy.Extension.MCP
             }
             return results;
         }
-
-        IEnumerable<ModuleDef> AllLoadedModules() =>
-            documentTreeView.GetAllModuleNodes()
-                .Select(m => m.Document?.ModuleDef)
-                .Where(m => m != null)
-                .Cast<ModuleDef>();
 
         // ---------- target resolvers ----------
 

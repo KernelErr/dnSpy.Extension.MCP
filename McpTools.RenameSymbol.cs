@@ -361,10 +361,7 @@ namespace dnSpy.Extension.MCP
                     throw new ArgumentException($"Assembly not found: {assemblyName}");
                 return assembly.Modules;
             }
-            return documentTreeView.GetAllModuleNodes()
-                .Select(n => n.Document?.ModuleDef)
-                .Where(m => m != null)!
-                .Cast<ModuleDef>();
+            return GetLoadedModules();
         }
 
         (ModuleDef module, FieldDef field) ResolveFieldByToken(uint token, string? assemblyName) =>

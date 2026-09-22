@@ -55,10 +55,7 @@ namespace dnSpy.Extension.MCP
             }
             else
             {
-                modules = documentTreeView.GetAllModuleNodes()
-                    .Select(m => m.Document?.ModuleDef)
-                    .Where(m => m != null)!
-                    .Cast<ModuleDef>();
+                modules = GetLoadedModules();
             }
 
             var results = new List<object>();
@@ -204,10 +201,7 @@ namespace dnSpy.Extension.MCP
             }
             else
             {
-                modules = documentTreeView.GetAllModuleNodes()
-                    .Select(m => m.Document?.ModuleDef)
-                    .Where(m => m != null)!
-                    .Cast<ModuleDef>();
+                modules = GetLoadedModules();
             }
 
             var results = new List<object>();

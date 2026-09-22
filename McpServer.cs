@@ -5,6 +5,7 @@ using System.ComponentModel.Composition;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -50,6 +51,13 @@ namespace dnSpy.Extension.MCP {
 		// client's requested version when it's one of these (per the MCP lifecycle spec),
 		// otherwise we fall back to our newest supported version.
 		static readonly string[] supportedProtocolVersions = { "2025-06-18", "2025-03-26", "2024-11-05" };
+
+		// Reported as serverInfo.version: the extension's own release version, not dnSpy's. The csproj
+		// stamps McpExtensionVersion into AssemblyInformationalVersion and release.yml sets it from
+		// the release tag, so a client (or a user debugging a stale deploy) can tell builds apart.
+		static readonly string serverVersion =
+			typeof(McpServer).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+			?? "0.0.0-dev";
 
 		/// <summary>
 		/// Probes for an available TCP port on any interface, starting at <paramref name="startPort"/>
@@ -656,14 +664,28 @@ namespace dnSpy.Extension.MCP {
 					"tools/list" => HandleListTools(),
 					"tools/call" => HandleCallTool(request.Params),
 					"resources/list" => HandleListResources(),
+					"resources/templates/list" => HandleListResourceTemplates(),
 					"resources/read" => HandleReadResource(request.Params),
-					_ => throw new Exception($"Unknown method: {request.Method}")
+					_ => throw new MethodNotFoundException(request.Method)
 				};
 
 				return new McpResponse {
 					JsonRpc = "2.0",
 					Id = request.Id,
 					Result = result
+				};
+			}
+			catch (MethodNotFoundException ex) {
+				// JSON-RPC 2.0 reserves -32601 for this. Not logged as an ERROR: it is a client probing
+				// for an optional method we don't implement, not a failure on our side.
+				settings.Log($"Unsupported method: {request.Method}");
+				return new McpResponse {
+					JsonRpc = "2.0",
+					Id = request.Id,
+					Error = new McpError {
+						Code = -32601,
+						Message = ex.Message
+					}
 				};
 			}
 			catch (ArgumentException ex) {
@@ -705,7 +727,7 @@ namespace dnSpy.Extension.MCP {
 				},
 				ServerInfo = new ServerInfo {
 					Name = "dnSpy MCP Server",
-					Version = "1.0.0"
+					Version = serverVersion
 				}
 			};
 		}
@@ -760,6 +782,11 @@ namespace dnSpy.Extension.MCP {
 				Resources = bepinexResources.GetResources()
 			};
 		}
+
+		// MCP clients (Claude, MCP Inspector) probe this during initialization to discover
+		// parameterized resource URI templates. We expose none, so answer with an empty list rather
+		// than failing the probe (which also logged an error on every connect).
+		object HandleListResourceTemplates() => new { resourceTemplates = Array.Empty<object>() };
 
 		object HandleReadResource(Dictionary<string, object>? parameters) {
 			if (parameters == null)
@@ -837,6 +864,14 @@ namespace dnSpy.Extension.MCP {
 				stream.Flush();
 			}
 		}
+	}
+
+	/// <summary>
+	/// Thrown by <see cref="McpServer"/>'s dispatch for a JSON-RPC method it doesn't implement, so the
+	/// client gets -32601 (Method not found) rather than the -32603 internal-error code.
+	/// </summary>
+	sealed class MethodNotFoundException : Exception {
+		public MethodNotFoundException(string method) : base($"Method not found: {method}") { }
 	}
 
 	/// <summary>

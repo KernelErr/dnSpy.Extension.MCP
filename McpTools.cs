@@ -73,7 +73,7 @@ namespace dnSpy.Extension.MCP
                 },
                 new ToolInfo {
                     Name = "list_assemblies",
-                    Description = "List all loaded assemblies in dnSpy. Unity titles load hundreds of framework modules; pass name_filter (substring or '*' wildcard) to narrow, e.g. 'Assembly-CSharp'.",
+                    Description = "List all loaded assemblies in dnSpy, each with its on-disk Path. Unity titles load hundreds of framework modules; pass name_filter (substring or '*' wildcard) to narrow, e.g. 'Assembly-CSharp'. Every tool's assembly_name accepts the simple name, the full name, or this Path — when the same assembly is loaded more than once (two copies or versions), the name is ambiguous and the tools refuse it, so pass the Path to pick one.",
                     InputSchema = new Dictionary<string, object> {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object> {
@@ -93,7 +93,7 @@ namespace dnSpy.Extension.MCP
                         ["properties"] = new Dictionary<string, object> {
                             ["assembly_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Name of the assembly"
+                                ["description"] = "Assembly name (e.g. 'Assembly-CSharp'), or its Path from list_assemblies when two loaded assemblies share the name"
                             },
                             ["cursor"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -111,7 +111,7 @@ namespace dnSpy.Extension.MCP
                         ["properties"] = new Dictionary<string, object> {
                             ["assembly_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Name of the assembly"
+                                ["description"] = "Assembly name (e.g. 'Assembly-CSharp'), or its Path from list_assemblies when two loaded assemblies share the name"
                             },
                             ["namespace"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -149,7 +149,7 @@ namespace dnSpy.Extension.MCP
                         ["properties"] = new Dictionary<string, object> {
                             ["assembly_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Name of the assembly"
+                                ["description"] = "Assembly name (e.g. 'Assembly-CSharp'), or its Path from list_assemblies when two loaded assemblies share the name"
                             },
                             ["type_full_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -183,7 +183,7 @@ namespace dnSpy.Extension.MCP
                         ["properties"] = new Dictionary<string, object> {
                             ["assembly_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Name of the assembly"
+                                ["description"] = "Assembly name (e.g. 'Assembly-CSharp'), or its Path from list_assemblies when two loaded assemblies share the name"
                             },
                             ["type_full_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -283,7 +283,7 @@ namespace dnSpy.Extension.MCP
                         ["properties"] = new Dictionary<string, object> {
                             ["assembly_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Name of the assembly"
+                                ["description"] = "Assembly name (e.g. 'Assembly-CSharp'), or its Path from list_assemblies when two loaded assemblies share the name"
                             },
                             ["type_full_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -560,7 +560,7 @@ namespace dnSpy.Extension.MCP
                         ["properties"] = new Dictionary<string, object> {
                             ["assembly_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Name of the assembly"
+                                ["description"] = "Assembly name (e.g. 'Assembly-CSharp'), or its Path from list_assemblies when two loaded assemblies share the name"
                             },
                             ["type_full_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -686,7 +686,7 @@ namespace dnSpy.Extension.MCP
                         ["properties"] = new Dictionary<string, object> {
                             ["assembly_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Name of the assembly"
+                                ["description"] = "Assembly name (e.g. 'Assembly-CSharp'), or its Path from list_assemblies when two loaded assemblies share the name"
                             },
                             ["type_full_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -712,7 +712,7 @@ namespace dnSpy.Extension.MCP
                         ["properties"] = new Dictionary<string, object> {
                             ["assembly_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Name of the assembly"
+                                ["description"] = "Assembly name (e.g. 'Assembly-CSharp'), or its Path from list_assemblies when two loaded assemblies share the name"
                             },
                             ["type_full_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -734,7 +734,7 @@ namespace dnSpy.Extension.MCP
                         ["properties"] = new Dictionary<string, object> {
                             ["assembly_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Name of the assembly"
+                                ["description"] = "Assembly name (e.g. 'Assembly-CSharp'), or its Path from list_assemblies when two loaded assemblies share the name"
                             },
                             ["from_type"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -760,7 +760,7 @@ namespace dnSpy.Extension.MCP
                         ["properties"] = new Dictionary<string, object> {
                             ["assembly_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Name of the assembly"
+                                ["description"] = "Assembly name (e.g. 'Assembly-CSharp'), or its Path from list_assemblies when two loaded assemblies share the name"
                             },
                             ["type_full_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -782,7 +782,7 @@ namespace dnSpy.Extension.MCP
                         ["properties"] = new Dictionary<string, object> {
                             ["assembly_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
-                                ["description"] = "Name of the assembly"
+                                ["description"] = "Assembly name (e.g. 'Assembly-CSharp'), or its Path from list_assemblies when two loaded assemblies share the name"
                             },
                             ["type_full_name"] = new Dictionary<string, object> {
                                 ["type"] = "string",
@@ -1021,78 +1021,114 @@ namespace dnSpy.Extension.MCP
             };
         }
 
+        // Tools that mutate dnlib state or touch dnSpy's UI objects (document tree nodes, tabs). They
+        // run on the WPF UI thread: tree nodes are DispatcherObjects that throw "calling thread cannot
+        // access this object" from any other thread, and mutating there serializes our edits with
+        // AsmEditor's own dialogs, which mutate on that thread too. Every other tool only reads dnlib
+        // metadata — enumerated through GetLoadedModules, never the tree — and runs on the calling
+        // HTTP worker thread, so a whole-program sweep over a big game doesn't freeze dnSpy's UI.
+        static readonly HashSet<string> UiThreadTools = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "open_files", "patch_method_il", "force_return", "nop_method",
+            "revert_method_il", "rename_symbol_by_token", "save_assembly",
+        };
+
+        // Serializes tool calls, as funneling every call through the UI thread used to: a read never
+        // observes a half-applied patch or rename, and two writes never interleave. Only ever taken on
+        // the HTTP worker thread that calls ExecuteTool — writes take it *before* marshaling to the UI
+        // thread — so the UI thread never waits on it. That is what keeps a reader that needs the
+        // dispatcher (McpSettings.Log invokes onto it synchronously) from deadlocking against a writer.
+        readonly object toolLock = new object();
+
         /// <summary>
-        /// Executes a specific MCP tool by name with the given arguments.
+        /// Executes a specific MCP tool by name with the given arguments. Called on an HTTP worker
+        /// thread, never the UI thread (see <see cref="toolLock"/>). Handler exceptions — including
+        /// the <see cref="ArgumentException"/>s thrown for bad input — come back as an
+        /// <c>isError</c> tool result carrying the message, not as a JSON-RPC error, so the model
+        /// sees what to fix and can retry (the MCP convention for tool-execution errors).
         /// </summary>
         /// <param name="toolName">The name of the tool to execute.</param>
         /// <param name="arguments">Tool-specific arguments.</param>
         /// <returns>The tool execution result.</returns>
         public CallToolResult ExecuteTool(string toolName, Dictionary<string, object>? arguments)
         {
-            // Marshal every tool handler onto the WPF UI thread. dnSpy's document tree
-            // is a DispatcherObject — the moment a user-loaded assembly is indexed, all
-            // downstream tree/node reads from an HTTP worker thread throw
-            // "calling thread cannot access this object". Patch/save already take this
-            // path explicitly; InvokeOnUiThread short-circuits when already on the UI
-            // thread, so the double-wrap is a no-op.
-            return InvokeOnUiThread(() =>
+            lock (toolLock)
             {
-                try
+                return UiThreadTools.Contains(toolName)
+                    ? InvokeOnUiThread(() => RunTool(toolName, arguments))
+                    : RunTool(toolName, arguments);
+            }
+        }
+
+        CallToolResult RunTool(string toolName, Dictionary<string, object>? arguments)
+        {
+            try
+            {
+                return toolName switch
                 {
-                    return toolName switch
-                    {
-                        "open_files" => OpenFiles(arguments),
-                        "list_assemblies" => ListAssemblies(arguments),
-                        "get_assembly_info" => GetAssemblyInfo(arguments),
-                        "list_types" => ListTypes(arguments),
-                        "get_type_info" => GetTypeInfo(arguments),
-                        "decompile_method" => DecompileMethod(arguments),
-                        "decompile_type" => DecompileType(arguments),
-                        "decompile_by_token" => DecompileByToken(arguments),
-                        "search_types" => SearchTypes(arguments),
-                        "search_members" => SearchMembers(arguments),
-                        "find_callers" => FindCallers(arguments),
-                        "find_callees" => FindCallees(arguments),
-                        "find_references" => FindReferences(arguments),
-                        "find_overrides" => FindOverrides(arguments),
-                        "search_string_literals" => SearchStringLiterals(arguments),
-                        "list_string_constants" => ListStringConstants(arguments),
-                        "search_constants" => SearchConstants(arguments),
-                        "generate_bepinex_plugin" => GenerateBepInExPlugin(arguments),
-                        "generate_harmony_patch" => GenerateHarmonyPatch(arguments),
-                        "find_unity_messages" => FindUnityMessages(arguments),
-                        "find_by_attribute" => FindByAttribute(arguments),
-                        "get_type_fields" => GetTypeFields(arguments),
-                        "get_type_property" => GetTypeProperty(arguments),
-                        "find_path_to_type" => FindPathToType(arguments),
-                        "list_methods" => ListMethods(arguments),
-                        "get_method_il" => GetMethodIL(arguments),
-                        "patch_method_il" => PatchMethodIL(arguments),
-                        "force_return" => ForceReturn(arguments),
-                        "nop_method" => NopMethod(arguments),
-                        "revert_method_il" => RevertMethodIL(arguments),
-                        "rename_symbol_by_token" => RenameSymbolByToken(arguments),
-                        "save_assembly" => SaveAssembly(arguments),
-                        _ => new CallToolResult
-                        {
-                            Content = new List<ToolContent> {
-                                new ToolContent { Text = $"Unknown tool: {toolName}" }
-                            },
-                            IsError = true
-                        }
-                    };
-                }
-                catch (Exception ex)
-                {
-                    return new CallToolResult
+                    "open_files" => OpenFiles(arguments),
+                    "list_assemblies" => ListAssemblies(arguments),
+                    "get_assembly_info" => GetAssemblyInfo(arguments),
+                    "list_types" => ListTypes(arguments),
+                    "get_type_info" => GetTypeInfo(arguments),
+                    "decompile_method" => DecompileMethod(arguments),
+                    "decompile_type" => DecompileType(arguments),
+                    "decompile_by_token" => DecompileByToken(arguments),
+                    "search_types" => SearchTypes(arguments),
+                    "search_members" => SearchMembers(arguments),
+                    "find_callers" => FindCallers(arguments),
+                    "find_callees" => FindCallees(arguments),
+                    "find_references" => FindReferences(arguments),
+                    "find_overrides" => FindOverrides(arguments),
+                    "search_string_literals" => SearchStringLiterals(arguments),
+                    "list_string_constants" => ListStringConstants(arguments),
+                    "search_constants" => SearchConstants(arguments),
+                    "generate_bepinex_plugin" => GenerateBepInExPlugin(arguments),
+                    "generate_harmony_patch" => GenerateHarmonyPatch(arguments),
+                    "find_unity_messages" => FindUnityMessages(arguments),
+                    "find_by_attribute" => FindByAttribute(arguments),
+                    "get_type_fields" => GetTypeFields(arguments),
+                    "get_type_property" => GetTypeProperty(arguments),
+                    "find_path_to_type" => FindPathToType(arguments),
+                    "list_methods" => ListMethods(arguments),
+                    "get_method_il" => GetMethodIL(arguments),
+                    "patch_method_il" => PatchMethodIL(arguments),
+                    "force_return" => ForceReturn(arguments),
+                    "nop_method" => NopMethod(arguments),
+                    "revert_method_il" => RevertMethodIL(arguments),
+                    "rename_symbol_by_token" => RenameSymbolByToken(arguments),
+                    "save_assembly" => SaveAssembly(arguments),
+                    _ => new CallToolResult
                     {
                         Content = new List<ToolContent> {
-                            new ToolContent { Text = $"Error executing tool {toolName}: {ex.Message}" }
+                            new ToolContent { Text = $"Unknown tool: {toolName}" }
                         },
                         IsError = true
-                    };
-                }
-            });
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                return new CallToolResult
+                {
+                    Content = new List<ToolContent> {
+                        new ToolContent { Text = $"Error executing tool {toolName}: {ex.Message}" }
+                    },
+                    IsError = true
+                };
+            }
+        }
+
+        /// <summary>
+        /// Runs <paramref name="action"/> synchronously on the WPF UI thread, or inline when already
+        /// on it or when there is no live dispatcher (early startup / shutdown).
+        /// </summary>
+        static T InvokeOnUiThread<T>(Func<T> action)
+        {
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher == null || dispatcher.HasShutdownStarted || dispatcher.CheckAccess())
+                return action();
+            return dispatcher.Invoke(action);
         }
 
         /// <summary>
@@ -1212,18 +1248,18 @@ namespace dnSpy.Extension.MCP
                     nameMatch = BuildStringMatcher(nf!);
             }
 
-            var assemblies = documentTreeView.GetAllModuleNodes()
-                .Select(m => m.Document?.AssemblyDef)
-                .Where(a => a != null)
-                .Distinct()
-                .Where(a => nameMatch(a!.Name.String))
+            var assemblies = GetLoadedAssemblies()
+                .Where(a => nameMatch(a.Assembly.Name.String))
                 .Select(a => new
                 {
-                    Name = a!.Name.String,
-                    Version = a.Version?.ToString() ?? "N/A",
-                    FullName = a.FullName,
-                    Culture = a.Culture ?? "neutral",
-                    PublicKeyToken = a.PublicKeyToken?.ToString() ?? "null"
+                    Name = a.Assembly.Name.String,
+                    Version = a.Assembly.Version?.ToString() ?? "N/A",
+                    FullName = a.Assembly.FullName,
+                    Culture = a.Assembly.Culture ?? "neutral",
+                    PublicKeyToken = a.Assembly.PublicKeyToken?.ToString() ?? "null",
+                    // The one handle that stays unique when the same assembly is loaded twice;
+                    // every tool's assembly_name accepts it (see FindAssemblyByName).
+                    Path = a.Filename
                 })
                 .ToList();
 
@@ -1599,10 +1635,7 @@ namespace dnSpy.Extension.MCP
             }
             else
             {
-                modules = documentTreeView.GetAllModuleNodes()
-                    .Select(m => m.Document?.ModuleDef)
-                    .Where(m => m != null)!
-                    .Cast<ModuleDef>();
+                modules = GetLoadedModules();
             }
 
             var hits = new List<(ModuleDef module, object resolved)>();
@@ -1752,8 +1785,7 @@ namespace dnSpy.Extension.MCP
             }
             else
             {
-                typeUniverse = documentTreeView.GetAllModuleNodes()
-                    .SelectMany(m => m.Document?.ModuleDef?.GetTypes() ?? Enumerable.Empty<TypeDef>());
+                typeUniverse = GetLoadedModules().SelectMany(m => m.GetTypes());
             }
 
             // Check if query contains wildcards
@@ -1858,8 +1890,7 @@ namespace dnSpy.Extension.MCP
             }
             else
             {
-                typeUniverse = documentTreeView.GetAllModuleNodes()
-                    .SelectMany(m => m.Document?.ModuleDef?.GetTypes() ?? Enumerable.Empty<TypeDef>());
+                typeUniverse = GetLoadedModules().SelectMany(m => m.GetTypes());
             }
 
             bool wantMethods = kinds.Contains("method");
@@ -2057,12 +2088,16 @@ namespace dnSpy.Extension.MCP
             // unresolved hook degrades to a commented stub instead of failing the whole plugin.
             if (arguments.TryGetValue("hooks", out var hooksObj) && hooksObj is JsonElement hooksElement)
             {
+                // Resolved outside the lenient try below: an ambiguous target_assembly must fail the
+                // call with its candidate paths, not be swallowed into a plugin with no hooks at all.
+                var hookAssembly = hooksElement.ValueKind == JsonValueKind.Array && hooksElement.GetArrayLength() > 0
+                    ? FindAssemblyByName(targetAssembly)
+                    : null;
                 try
                 {
                     var hooks = JsonSerializer.Deserialize<List<Dictionary<string, string>>>(hooksElement.ToString());
                     if (hooks != null && hooks.Count > 0)
                     {
-                        var hookAssembly = FindAssemblyByName(targetAssembly);
                         foreach (var hook in hooks)
                         {
                             if (!hook.TryGetValue("type_name", out var typeName) ||
@@ -2537,8 +2572,7 @@ namespace dnSpy.Extension.MCP
             }
             else
             {
-                typeUniverse = documentTreeView.GetAllModuleNodes()
-                    .SelectMany(m => m.Document?.ModuleDef?.GetTypes() ?? Enumerable.Empty<TypeDef>());
+                typeUniverse = GetLoadedModules().SelectMany(m => m.GetTypes());
             }
 
             bool wantType = kinds.Contains("type");
@@ -2934,11 +2968,97 @@ namespace dnSpy.Extension.MCP
             return null;
         }
 
+        /// <summary>
+        /// Every loaded .NET module, once each: the modules of each loaded assembly plus standalone
+        /// module documents. Read through <see cref="IDsDocumentService"/>, never the document tree:
+        /// GetDocuments() snapshots under a lock, so this is safe on the HTTP worker threads the
+        /// read-only tools run on, whereas tree nodes are UI-thread-only DispatcherObjects.
+        /// </summary>
+        List<ModuleDef> GetLoadedModules()
+        {
+            var modules = new List<ModuleDef>();
+            var seen = new HashSet<ModuleDef>();
+            foreach (var doc in documentTreeView.DocumentService.GetDocuments())
+            {
+                // An assembly document's children are exactly its AssemblyDef.Modules (see dnSpy's
+                // DsDotNetDocument.CreateChildren), so this covers netmodules the tree would show.
+                var docModules = doc.AssemblyDef?.Modules.ToList()
+                    ?? (doc.ModuleDef != null ? new List<ModuleDef> { doc.ModuleDef } : new List<ModuleDef>());
+                foreach (var module in docModules)
+                {
+                    if (module != null && seen.Add(module))
+                        modules.Add(module);
+                }
+            }
+            return modules;
+        }
+
+        /// <summary>
+        /// Every loaded assembly paired with the file it was loaded from. Thread-safe for the same
+        /// reason as <see cref="GetLoadedModules"/>.
+        /// </summary>
+        List<(AssemblyDef Assembly, string Filename)> GetLoadedAssemblies()
+        {
+            var assemblies = new List<(AssemblyDef Assembly, string Filename)>();
+            var seen = new HashSet<AssemblyDef>();
+            foreach (var doc in documentTreeView.DocumentService.GetDocuments())
+            {
+                if (doc.AssemblyDef is AssemblyDef assembly && seen.Add(assembly))
+                    assemblies.Add((assembly, doc.Filename ?? string.Empty));
+            }
+            return assemblies;
+        }
+
+        /// <summary>
+        /// Resolves the assembly_name argument every tool takes. Accepts, in order: the file path of a
+        /// loaded assembly (list_assemblies' Path), its full name ("Name, Version=…, Culture=…,
+        /// PublicKeyToken=…"), or its simple name. Returns null when nothing matches. Throws
+        /// <see cref="ArgumentException"/> listing the candidates when the name matches more than one
+        /// loaded assembly (two copies or versions of the same DLL): silently taking the first would
+        /// let a patch, rename or save land on the wrong one.
+        /// </summary>
         AssemblyDef? FindAssemblyByName(string name)
         {
-            return documentTreeView.GetAllModuleNodes()
-                .Select(m => m.Document?.AssemblyDef)
-                .FirstOrDefault(a => a != null && a.Name.String.Equals(name, StringComparison.OrdinalIgnoreCase));
+            var loaded = GetLoadedAssemblies();
+            var needle = name.Trim();
+
+            // A path is the one handle that stays unique when the same assembly is loaded twice.
+            if (needle.IndexOfAny(new[] { '\\', '/' }) >= 0)
+            {
+                var fullPath = TryGetFullPath(needle);
+                if (fullPath == null)
+                    return null;
+                return loaded.FirstOrDefault(a =>
+                    string.Equals(TryGetFullPath(a.Filename), fullPath, StringComparison.OrdinalIgnoreCase)).Assembly;
+            }
+
+            var byFullName = loaded
+                .Where(a => string.Equals(a.Assembly.FullName, needle, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (byFullName.Count > 0)
+                return SingleAssemblyOrThrow(byFullName, needle);
+
+            return SingleAssemblyOrThrow(
+                loaded.Where(a => a.Assembly.Name.String.Equals(needle, StringComparison.OrdinalIgnoreCase)).ToList(),
+                needle);
+        }
+
+        static AssemblyDef? SingleAssemblyOrThrow(List<(AssemblyDef Assembly, string Filename)> matches, string name)
+        {
+            if (matches.Count <= 1)
+                return matches.Count == 1 ? matches[0].Assembly : null;
+            throw new ArgumentException(
+                $"Assembly name '{name}' is ambiguous: {matches.Count} loaded assemblies match. " +
+                "Pass one of these paths as assembly_name instead: " +
+                string.Join("; ", matches.Select(m => $"{m.Filename} ({m.Assembly.FullName})")));
+        }
+
+        static string? TryGetFullPath(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+                return null;
+            try { return System.IO.Path.GetFullPath(path); }
+            catch { return null; }
         }
 
         TypeDef? FindTypeInAssembly(AssemblyDef assembly, string fullName)
@@ -2996,8 +3116,9 @@ namespace dnSpy.Extension.MCP
         /// <summary>
         /// Resolves a method by name, optionally disambiguated by parameter types or MDToken.
         /// Resolution order: token &gt; parameter_types &gt; name-only.
-        /// Throws ArgumentException (-> JSON-RPC -32602) on 0 or &gt;1 matches, with a candidate list
-        /// when multiple overloads share the name so the caller can retry with parameter_types.
+        /// Throws ArgumentException (surfaced to the client as an isError tool result) on 0 or &gt;1
+        /// matches, with a candidate list when multiple overloads share the name so the caller can
+        /// retry with parameter_types.
         /// </summary>
         MethodDef FindMethod(TypeDef type, string methodName, IList<string>? parameterTypes, uint? methodToken)
         {

@@ -84,14 +84,17 @@ $dnSpyExeFull = $resolved.Path
 function Resolve-DnSpyBinDirectory([string]$exePath)
 {
     $exeDir = Split-Path $exePath -Parent
-    # BinDirectory is the directory that contains dnSpy.dll next to the marker extension.
+    # dnSpy defines BinDirectory as the folder of dnSpy.Contracts.DnSpy.dll (AppDirectories), so
+    # anchor on that plus the marker extension. Not dnSpy.dll: on net48 the app assembly IS
+    # dnSpy.exe (no dnSpy.dll exists) and build.ps1 moves everything else into bin\, so requiring
+    # dnSpy.dll made -Tfm net48 fail before a single test ran.
     foreach ($candidate in @($exeDir, (Join-Path $exeDir 'bin'))) {
-        if ((Test-Path (Join-Path $candidate 'dnSpy.dll')) -and
+        if ((Test-Path (Join-Path $candidate 'dnSpy.Contracts.DnSpy.dll')) -and
             (Test-Path (Join-Path $candidate 'dnSpy.Analyzer.x.dll'))) {
             return $candidate
         }
     }
-    throw "Could not locate dnSpy's BinDirectory (dnSpy.dll + dnSpy.Analyzer.x.dll) under $exeDir. Is this a complete dnSpy build?"
+    throw "Could not locate dnSpy's BinDirectory (dnSpy.Contracts.DnSpy.dll + dnSpy.Analyzer.x.dll) under $exeDir. Is this a complete dnSpy build?"
 }
 $dnSpyBinDir = Resolve-DnSpyBinDirectory $dnSpyExeFull
 $extDeployDir = Join-Path $dnSpyBinDir 'Extensions\dnSpy.Extension.MCP'
@@ -124,6 +127,15 @@ function RpcText([string]$tool, [hashtable]$arguments, [int]$p = $script:Port)
     if ($jr.error) { throw "Tool $tool RPC error: $($jr.error.message)" }
     if ($jr.result.isError -eq $true) { throw "Tool $tool returned error: $($jr.result.content[0].text)" }
     return $jr.result.content[0].text
+}
+
+# A bare JSON-RPC call (not tools/call) that returns the whole envelope, for asserting protocol-level
+# results and error codes. JSON-RPC errors still come back as HTTP 200, so nothing throws here.
+function RawRpc([string]$method, [hashtable]$params, [int]$p = $script:Port)
+{
+    $payload = @{ jsonrpc='2.0'; id=1; method=$method; params=$params } | ConvertTo-Json -Depth 10 -Compress
+    $resp = Invoke-WebRequest -Uri "http://localhost:$p/" -Method Post -ContentType 'application/json' -Body $payload -UseBasicParsing
+    return ($resp.Content | ConvertFrom-Json)
 }
 
 # ----- step 1: build fixture -----
@@ -159,7 +171,10 @@ Set-McpPortInSettings $Port
 # Quote the fixture path: Start-Process does not auto-quote -ArgumentList entries, so a
 # path containing spaces (e.g. C:\Users\Rui Li\...) would reach dnSpy split at the space
 # and the fixture would silently fail to load.
-$dnSpyProc = Start-Process -FilePath $dnSpyExeFull -ArgumentList "`"$testDll`"" -WindowStyle Hidden -PassThru
+# --dont-load-files skips dnSpy's session restore (the saved document list), so the fixture is the
+# only thing loaded: a restored copy of an assembly named TestIL — say, from a -KeepDnSpy run that was
+# later closed normally — would make assembly_name='TestIL' ambiguous, which the tools now refuse.
+$dnSpyProc = Start-Process -FilePath $dnSpyExeFull -ArgumentList "--dont-load-files `"$testDll`"" -WindowStyle Hidden -PassThru
 
 # Poll for /health on the configured port with +N fallback (McpServer's FindAvailablePort tries up to 20).
 $found = $false
@@ -326,8 +341,8 @@ try
     $methodsWithSave = @($saveHits | ForEach-Object { $_.method } | Sort-Object -Unique)
     Assert (($methodsWithSave -contains 'SaveGame') -and ($methodsWithSave -contains 'LoadGame')) "both SaveGame and LoadGame returned" "got $($methodsWithSave -join ',')"
     Assert ($saveHits[0].method_token -gt 0 -and $saveHits[0].type -eq 'TestIL.StringKeys') "hit carries type + MDToken"
-    # Unique key resolves to exactly one method. Scope to TestIL: a real game assembly may also be
-    # open in the dev's dnSpy session (session restore), and game strings could collide.
+    # Unique key resolves to exactly one method. Scope to TestIL anyway: dnSpy auto-loads the
+    # fixture's framework references, and an unscoped sweep would pick up their strings too.
     $umbra = Rpc 'search_string_literals' @{ query='TheFinaleUmbra'; assembly_name='TestIL' }
     $umbraHits = @($umbra.items | Where-Object { $_.value -eq 'TheFinaleUmbra' })
     Assert ($umbraHits.Count -eq 1 -and $umbraHits[0].method -eq 'LoadGame') "TheFinaleUmbra resolves to LoadGame only" "count=$($umbraHits.Count)"
@@ -580,8 +595,8 @@ try
     $crateSrc = RpcText 'decompile_by_token' @{ token=$crateHit.token; assembly_name='TestIL' }
     Assert ($crateSrc -match 'TakeDamage') "interface-impl token feeds decompile_by_token"
 
-    # ----- step 22: force_return / nop_method (high-level body rewrites) — before open_files, which
-    # loads duplicate TestIL copies that would confuse FindAssemblyByName for these patches.
+    # ----- step 22: force_return / nop_method (high-level body rewrites). Like every step until [32]
+    # this addresses the fixture as 'TestIL'; that stays unambiguous until open_files loads copies.
     Write-Host ""
     Write-Host "[22] force_return / nop_method"
     # The classic move: make a bool method return true.
@@ -658,43 +673,10 @@ try
     $sc5testil = @($sc5.items | Where-Object { $_.assembly -eq 'TestIL' -and $_.value -eq 1337 })
     Assert ($sc5testil.Count -ge 2) "unscoped search_constants still finds TestIL's 1337 sites across all modules" "count=$($sc5testil.Count)"
 
-    # ----- step 26: open_files (load assemblies from disk). It loads extra copies of TestIL, which
-    # add duplicate 'TestIL' entries; tools after this scope by assembly_name and FindAssemblyByName
-    # returns the first (original) match, so the read-only steps below stay deterministic.
-    Write-Host ""
-    Write-Host "[26] open_files: load assemblies by file path and by directory"
-    $openDir = Join-Path $binFixture 'opentest'
-    if (Test-Path $openDir) { Remove-Item $openDir -Recurse -Force }
-    New-Item -ItemType Directory -Path $openDir | Out-Null
-    $openA = Join-Path $openDir 'OpenA.dll'
-    Copy-Item $testDll $openA -Force
-    # File mode: a path not yet loaded.
-    $o1 = Rpc 'open_files' @{ paths=@($openA) }
-    Assert ($o1.loaded_count -eq 1 -and $o1.failed_count -eq 0) "open_files loads OpenA.dll (1 new)" "loaded=$($o1.loaded_count) already=$($o1.already_loaded_count) failed=$($o1.failed_count)"
-    Assert (@($o1.loaded | Where-Object { $_.name -eq 'TestIL' }).Count -ge 1) "loaded entry carries assembly name (TestIL)"
-    $afterOpen = @(Rpc 'list_assemblies' @{ name_filter='TestIL' })
-    Assert ((@($afterOpen | Where-Object { $_.Name -eq 'TestIL' }).Count) -ge 2) "newly opened assembly shows up in list_assemblies"
-    # Idempotent: re-opening the same path is reported as already loaded, not reloaded.
-    $o2 = Rpc 'open_files' @{ paths=@($openA) }
-    Assert ($o2.loaded_count -eq 0 -and $o2.already_loaded_count -eq 1) "re-opening the same path reports already_loaded" "loaded=$($o2.loaded_count) already=$($o2.already_loaded_count)"
-    # Directory mode: drop a 2nd copy in and open the whole folder.
-    Copy-Item $testDll (Join-Path $openDir 'OpenB.dll') -Force
-    $o3 = Rpc 'open_files' @{ paths=@($openDir) }
-    Assert ($o3.loaded_count -eq 1 -and $o3.already_loaded_count -eq 1) "directory mode loads new OpenB.dll, skips already-open OpenA.dll" "loaded=$($o3.loaded_count) already=$($o3.already_loaded_count)"
-    # Recursive: a DLL in a subdirectory is skipped by default (top-dir only) but picked up with recursive=true.
-    $subDir = Join-Path $openDir 'nested'
-    New-Item -ItemType Directory -Path $subDir | Out-Null
-    Copy-Item $testDll (Join-Path $subDir 'OpenC.dll') -Force
-    $o3b = Rpc 'open_files' @{ paths=@($openDir) }
-    Assert ($o3b.loaded_count -eq 0) "default (non-recursive) directory mode does not descend into subdirectories" "loaded=$($o3b.loaded_count)"
-    $o3c = Rpc 'open_files' @{ paths=@($openDir); recursive=$true }
-    Assert ($o3c.loaded_count -eq 1) "recursive=true loads the DLL in the nested subdirectory" "loaded=$($o3c.loaded_count) already=$($o3c.already_loaded_count)"
-    # A missing path is reported in failed[], not thrown as a tool error.
-    $o4 = Rpc 'open_files' @{ paths=@('C:\does\not\exist\nope.dll') }
-    Assert ($o4.failed_count -eq 1 -and $o4.loaded_count -eq 0) "missing file reported in failed[] (not a hard error)" "failed=$($o4.failed_count)"
+    # (step 26, open_files, runs last as [32]: it loads copies of TestIL, after which the simple name
+    # 'TestIL' is ambiguous and every tool refuses it.)
 
-    # ----- step 27: generate_harmony_patch (signature-aware patch codegen) — read-only, resolves the
-    # original TestIL deterministically even with the duplicate copies open_files just loaded.
+    # ----- step 27: generate_harmony_patch (signature-aware patch codegen) — read-only.
     Write-Host ""
     Write-Host "[27] generate_harmony_patch: signature-aware Harmony patches"
     # Static int method -> postfix with `ref int __result`, no __instance.
@@ -797,7 +779,8 @@ try
     $uintVal = & powershell -NoProfile -Command "[Reflection.Assembly]::LoadFile('$uintPath') | Out-Null; [TestIL.Patchable]::GetBigUint()"
     Assert ($uintVal -eq '3000000000') "force_return uint > int.MaxValue round-trips on disk (3000000000)" "got $uintVal"
     Rpc 'revert_method_il' @{ assembly_name='TestIL'; type_full_name='TestIL.Patchable'; method_name='GetBigUint' } | Out-Null
-    # MED-2: out-of-range int value errors as -32602 (ArgumentException 'does not fit'), not an internal error.
+    # MED-2: an out-of-range int value is rejected with a helpful message (ArgumentException 'does not fit',
+    # surfaced as an isError tool result like every tool error), not an internal failure.
     $rangeErr = $null
     try { Rpc 'force_return' @{ assembly_name='TestIL'; type_full_name='TestIL.Numbers'; method_name='Magic'; value=5000000000 } | Out-Null } catch { $rangeErr = $_.Exception.Message }
     Assert ($rangeErr -and ($rangeErr -match 'does not fit')) "out-of-range int value errors helpfully" "got: $rangeErr"
@@ -1142,6 +1125,92 @@ try
     Assert ($symbolProbe.Property -and $symbolProbe.Event) "saved assembly exposes renamed property and event"
     Assert ($symbolProbe.Method -and $symbolProbe.Parameter -eq 'personName') "saved assembly exposes renamed method and parameter"
     Assert ($symbolProbe.GenericParameter -eq 'TItem' -and $symbolProbe.EnumMember) "saved assembly exposes renamed generic parameter and enum member"
+
+    # ----- step 32: open_files (load assemblies from disk). Runs last on purpose: it loads extra copies
+    # of TestIL, after which the simple name 'TestIL' matches several assemblies and every tool refuses
+    # it, so the steps below address assemblies by file path.
+    Write-Host ""
+    Write-Host "[32] open_files: load assemblies by file path and by directory"
+    $openDir = Join-Path $binFixture 'opentest'
+    if (Test-Path $openDir) { Remove-Item $openDir -Recurse -Force }
+    New-Item -ItemType Directory -Path $openDir | Out-Null
+    $openA = Join-Path $openDir 'OpenA.dll'
+    $openB = Join-Path $openDir 'OpenB.dll'
+    Copy-Item $testDll $openA -Force
+    # File mode: a path not yet loaded.
+    $o1 = Rpc 'open_files' @{ paths=@($openA) }
+    Assert ($o1.loaded_count -eq 1 -and $o1.failed_count -eq 0) "open_files loads OpenA.dll (1 new)" "loaded=$($o1.loaded_count) already=$($o1.already_loaded_count) failed=$($o1.failed_count)"
+    Assert (@($o1.loaded | Where-Object { $_.name -eq 'TestIL' }).Count -ge 1) "loaded entry carries assembly name (TestIL)"
+    $afterOpen = @(Rpc 'list_assemblies' @{ name_filter='TestIL' })
+    Assert ((@($afterOpen | Where-Object { $_.Name -eq 'TestIL' }).Count) -ge 2) "newly opened assembly shows up in list_assemblies"
+    # Idempotent: re-opening the same path is reported as already loaded, not reloaded.
+    $o2 = Rpc 'open_files' @{ paths=@($openA) }
+    Assert ($o2.loaded_count -eq 0 -and $o2.already_loaded_count -eq 1) "re-opening the same path reports already_loaded" "loaded=$($o2.loaded_count) already=$($o2.already_loaded_count)"
+    # Directory mode: drop a 2nd copy in and open the whole folder.
+    Copy-Item $testDll $openB -Force
+    $o3 = Rpc 'open_files' @{ paths=@($openDir) }
+    Assert ($o3.loaded_count -eq 1 -and $o3.already_loaded_count -eq 1) "directory mode loads new OpenB.dll, skips already-open OpenA.dll" "loaded=$($o3.loaded_count) already=$($o3.already_loaded_count)"
+    # Recursive: a DLL in a subdirectory is skipped by default (top-dir only) but picked up with recursive=true.
+    $subDir = Join-Path $openDir 'nested'
+    New-Item -ItemType Directory -Path $subDir | Out-Null
+    Copy-Item $testDll (Join-Path $subDir 'OpenC.dll') -Force
+    $o3b = Rpc 'open_files' @{ paths=@($openDir) }
+    Assert ($o3b.loaded_count -eq 0) "default (non-recursive) directory mode does not descend into subdirectories" "loaded=$($o3b.loaded_count)"
+    $o3c = Rpc 'open_files' @{ paths=@($openDir); recursive=$true }
+    Assert ($o3c.loaded_count -eq 1) "recursive=true loads the DLL in the nested subdirectory" "loaded=$($o3c.loaded_count) already=$($o3c.already_loaded_count)"
+    # A missing path is reported in failed[], not thrown as a tool error.
+    $o4 = Rpc 'open_files' @{ paths=@('C:\does\not\exist\nope.dll') }
+    Assert ($o4.failed_count -eq 1 -and $o4.loaded_count -eq 0) "missing file reported in failed[] (not a hard error)" "failed=$($o4.failed_count)"
+
+    # ----- step 33: a name loaded more than once is refused, and each copy is addressable by path -----
+    Write-Host ""
+    Write-Host "[33] duplicate assembly names: refused by name, addressable by path"
+    $testilRows = @(Rpc 'list_assemblies' @{ name_filter='TestIL' })
+    Assert (@($testilRows | Where-Object { $_.Path -eq $testDll }).Count -eq 1) "list_assemblies reports each assembly's Path" "paths=$(@($testilRows | ForEach-Object { $_.Path }) -join '; ')"
+    $ambiguous = $null
+    try { Rpc 'list_methods' @{ assembly_name='TestIL'; type_full_name='TestIL.Simple' } | Out-Null } catch { $ambiguous = $_.Exception.Message }
+    Assert ($ambiguous -and ($ambiguous -match 'ambiguous') -and ($ambiguous -match [regex]::Escape($openA))) "an ambiguous simple name is refused, listing the candidate paths" "got: $ambiguous"
+    # The original carries RT-5's in-memory rename (AddOne -> Increment); the copies came from disk without it.
+    $origNames = @((Rpc 'list_methods' @{ assembly_name=$testDll; type_full_name='TestIL.Simple'; page_size=100 }).items | ForEach-Object { $_.name })
+    Assert (($origNames -contains 'Increment') -and ($origNames -notcontains 'AddOne')) "assembly_name=<path> resolves the original fixture" "got $($origNames -join ',')"
+    $copyNames = @((Rpc 'list_methods' @{ assembly_name=$openA; type_full_name='TestIL.Simple'; page_size=100 }).items | ForEach-Object { $_.name })
+    Assert ($copyNames -contains 'AddOne') "assembly_name=<path> resolves a copy loaded by open_files" "got $($copyNames -join ',')"
+
+    # ----- step 34: patch snapshots belong to one method, not to a metadata token -----
+    # OpenA and OpenB are byte-identical copies, so Simple.AddOne has the same MethodDef token in both —
+    # the case a token-keyed snapshot store conflated: patching A hid B's snapshot, and reverting B wrote
+    # A's saved instructions into B and consumed A's snapshot.
+    Write-Host ""
+    Write-Host "[34] same-token methods in two assemblies keep independent patch snapshots"
+    $ilA0 = Rpc 'get_method_il' @{ assembly_name=$openA; type_full_name='TestIL.Simple'; method_name='AddOne' }
+    $ilB0 = Rpc 'get_method_il' @{ assembly_name=$openB; type_full_name='TestIL.Simple'; method_name='AddOne' }
+    Assert ([uint32]$ilA0.method.token -eq [uint32]$ilB0.method.token) "precondition: AddOne has the same token in both copies" "A=$($ilA0.method.token) B=$($ilB0.method.token)"
+    $shapeA0 = (@($ilA0.instructions | ForEach-Object { "$($_.opcode) $($_.operand)" }) -join ' | ')
+    $shapeB0 = (@($ilB0.instructions | ForEach-Object { "$($_.opcode) $($_.operand)" }) -join ' | ')
+    Rpc 'force_return' @{ assembly_name=$openA; type_full_name='TestIL.Simple'; method_name='AddOne'; value=7 } | Out-Null
+    $ilB1 = Rpc 'get_method_il' @{ assembly_name=$openB; type_full_name='TestIL.Simple'; method_name='AddOne' }
+    Assert ($ilB1.has_pending_patch -eq $false) "patching A's AddOne leaves B's same-token AddOne unpatched"
+    Rpc 'force_return' @{ assembly_name=$openB; type_full_name='TestIL.Simple'; method_name='AddOne'; value=9 } | Out-Null
+    $revB = Rpc 'revert_method_il' @{ assembly_name=$openB; type_full_name='TestIL.Simple'; method_name='AddOne' }
+    $shapeB = (@($revB.instructions | ForEach-Object { "$($_.opcode) $($_.operand)" }) -join ' | ')
+    Assert ($shapeB -eq $shapeB0) "reverting B restores B's own original body" "got: $shapeB"
+    $ilA1 = Rpc 'get_method_il' @{ assembly_name=$openA; type_full_name='TestIL.Simple'; method_name='AddOne' }
+    $shapeA1 = (@($ilA1.instructions | ForEach-Object { "$($_.opcode) $($_.operand)" }) -join ' | ')
+    Assert (($ilA1.has_pending_patch -eq $true) -and ($shapeA1 -ne $shapeA0)) "A is still patched after B's revert (its snapshot was not consumed)" "pending=$($ilA1.has_pending_patch) body: $shapeA1"
+    $revA = Rpc 'revert_method_il' @{ assembly_name=$openA; type_full_name='TestIL.Simple'; method_name='AddOne' }
+    $shapeA = (@($revA.instructions | ForEach-Object { "$($_.opcode) $($_.operand)" }) -join ' | ')
+    Assert ($shapeA -eq $shapeA0) "A then reverts to its own original body" "got: $shapeA"
+
+    # ----- step 35: protocol surface -----
+    Write-Host ""
+    Write-Host "[35] protocol: serverInfo.version, resources/templates/list, unknown method"
+    $init = RawRpc 'initialize' @{ protocolVersion='2025-06-18'; capabilities=@{}; clientInfo=@{ name='run-tests'; version='1' } }
+    $builtVersion = (Get-Item $extDllSrc).VersionInfo.ProductVersion
+    Assert ($init.result.serverInfo.version -eq $builtVersion) "serverInfo.version reports the extension build's own version ($builtVersion)" "got $($init.result.serverInfo.version)"
+    $templates = RawRpc 'resources/templates/list' @{}
+    Assert (($null -eq $templates.error) -and ($templates.result.PSObject.Properties.Name -contains 'resourceTemplates') -and (@($templates.result.resourceTemplates).Count -eq 0)) "resources/templates/list answers with an empty list" "got: $($templates | ConvertTo-Json -Compress -Depth 5)"
+    $unknown = RawRpc 'no/such/method' @{}
+    Assert ($unknown.error.code -eq -32601) "an unknown JSON-RPC method gets -32601 (Method not found)" "got $($unknown.error.code): $($unknown.error.message)"
 }
 finally
 {
