@@ -7,9 +7,9 @@
     <Nullable>enable</Nullable>
     <UseWPF>true</UseWPF>
     <!-- The SDK implicitly globs every .cs file under the project root. Keep the
-         test fixture (tests/fixtures/) and its generated obj/ out of our compile
-         so building the extension doesn't pull in TestIL.cs / AssemblyInfo.cs. -->
-    <DefaultItemExcludes>$(DefaultItemExcludes);tests/**</DefaultItemExcludes>
+         test fixture (tests/fixtures/) and the headless host project (headless/), plus
+         their generated obj/, out of our compile. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);tests/**;headless/**</DefaultItemExcludes>
     <!-- The extension's own version (not dnSpy's DnSpyAssemblyVersion), reported to MCP clients as
          serverInfo.version via AssemblyInformationalVersion. release.yml passes
          -p:McpExtensionVersion=<release tag without the leading v>; every other build reports the
@@ -25,6 +25,11 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.VisualStudio.Text.UI.Wpf" Version="$(MSVSTextVersion)" />
+  </ItemGroup>
+
+  <!-- The headless host (headless/) runs McpTools / McpDispatcher outside dnSpy. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="dnSpy.Extension.MCP.Headless" />
   </ItemGroup>
 
   <!--

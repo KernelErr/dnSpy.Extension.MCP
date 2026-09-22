@@ -282,7 +282,7 @@ namespace dnSpy.Extension.MCP
                     $"(0x{duplicate.MDToken.Raw:X8}).");
 
             parameter.Name = new UTF8String(newName);
-            RefreshSymbolOwnerNode(method, module, "rename_symbol_by_token");
+            RefreshSymbolNode(method, module, "rename_symbol_by_token");
             settings.Log(
                 $"rename_symbol_by_token[parameter]: {module.Assembly?.Name.String ?? module.Name.String} " +
                 $"0x{token:X8} {method.FullName} parameter '{oldName}' → '{newName}'");
@@ -320,9 +320,9 @@ namespace dnSpy.Extension.MCP
 
             genericParameter.Name = new UTF8String(newName);
             if (owner is TypeDef ownerType)
-                RefreshSymbolOwnerNode(ownerType, module, "rename_symbol_by_token");
+                RefreshSymbolNode(ownerType, module, "rename_symbol_by_token");
             else
-                RefreshSymbolOwnerNode((MethodDef)owner, module, "rename_symbol_by_token");
+                RefreshSymbolNode((MethodDef)owner, module, "rename_symbol_by_token");
             settings.Log(
                 $"rename_symbol_by_token[generic_parameter]: {module.Assembly?.Name.String ?? module.Name.String} " +
                 $"0x{token:X8} {ownerName} '{oldName}' → '{newName}'");
@@ -439,42 +439,12 @@ namespace dnSpy.Extension.MCP
             return count == 0 ? refs.Count : count;
         }
 
-        void RefreshSymbolNode(TypeDef type, ModuleDef module, string operation)
+        // Redraws the renamed symbol's tree node — the owner's, for parameters and generic parameters —
+        // and rebuilds the module's open decompiled views. Both are no-ops without a UI (headless).
+        void RefreshSymbolNode(IMemberDef definition, ModuleDef module, string operation)
         {
-            try { documentTreeView.FindNode(type)?.TreeNode.RefreshUI(); }
-            catch (Exception ex) { settings.Log($"{operation} UI refresh warning: {ex.Message}"); }
-            RefreshDecompiledViews(module, operation);
-        }
-
-        void RefreshSymbolNode(FieldDef field, ModuleDef module, string operation)
-        {
-            try { documentTreeView.FindNode(field)?.TreeNode.RefreshUI(); }
-            catch (Exception ex) { settings.Log($"{operation} UI refresh warning: {ex.Message}"); }
-            RefreshDecompiledViews(module, operation);
-        }
-
-        void RefreshSymbolNode(PropertyDef property, ModuleDef module, string operation)
-        {
-            try { documentTreeView.FindNode(property)?.TreeNode.RefreshUI(); }
-            catch (Exception ex) { settings.Log($"{operation} UI refresh warning: {ex.Message}"); }
-            RefreshDecompiledViews(module, operation);
-        }
-
-        void RefreshSymbolNode(EventDef eventDef, ModuleDef module, string operation)
-        {
-            try { documentTreeView.FindNode(eventDef)?.TreeNode.RefreshUI(); }
-            catch (Exception ex) { settings.Log($"{operation} UI refresh warning: {ex.Message}"); }
-            RefreshDecompiledViews(module, operation);
-        }
-
-        void RefreshSymbolOwnerNode(TypeDef type, ModuleDef module, string operation) =>
-            RefreshSymbolNode(type, module, operation);
-
-        void RefreshSymbolOwnerNode(MethodDef method, ModuleDef module, string operation)
-        {
-            try { documentTreeView.FindNode(method)?.TreeNode.RefreshUI(); }
-            catch (Exception ex) { settings.Log($"{operation} UI refresh warning: {ex.Message}"); }
-            RefreshDecompiledViews(module, operation);
+            host.RefreshTreeNode(definition, operation);
+            host.RefreshDecompiledViews(module, operation);
         }
 
         static CallToolResult CreateSymbolRenameResult(

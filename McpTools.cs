@@ -7,9 +7,6 @@ using System.Text.Json;
 using dnlib.DotNet;
 using dnSpy.Contracts.Decompiler;
 using dnSpy.Contracts.Documents;
-using dnSpy.Contracts.Documents.Tabs;
-using dnSpy.Contracts.Documents.Tabs.DocViewer;
-using dnSpy.Contracts.Documents.TreeView;
 using dnSpy.Contracts.Text;
 
 namespace dnSpy.Extension.MCP
@@ -21,24 +18,17 @@ namespace dnSpy.Extension.MCP
     [Export(typeof(McpTools))]
     sealed partial class McpTools
     {
-        readonly IDocumentTreeView documentTreeView;
-        readonly IDocumentTabService documentTabService;
-        readonly IDecompilerService decompilerService;
+        readonly IMcpHost host;
         readonly McpSettings settings;
 
         /// <summary>
-        /// Initializes the MCP tools with dnSpy services.
+        /// Initializes the MCP tools on top of their host: <see cref="DnSpyMcpHost"/> inside dnSpy (MEF
+        /// wires it), or the headless host, which constructs this directly.
         /// </summary>
         [ImportingConstructor]
-        public McpTools(
-            IDocumentTreeView documentTreeView,
-            IDocumentTabService documentTabService,
-            IDecompilerService decompilerService,
-            McpSettings settings)
+        public McpTools(IMcpHost host, McpSettings settings)
         {
-            this.documentTreeView = documentTreeView;
-            this.documentTabService = documentTabService;
-            this.decompilerService = decompilerService;
+            this.host = host;
             this.settings = settings;
         }
 
@@ -1021,12 +1011,13 @@ namespace dnSpy.Extension.MCP
             };
         }
 
-        // Tools that mutate dnlib state or touch dnSpy's UI objects (document tree nodes, tabs). They
-        // run on the WPF UI thread: tree nodes are DispatcherObjects that throw "calling thread cannot
-        // access this object" from any other thread, and mutating there serializes our edits with
-        // AsmEditor's own dialogs, which mutate on that thread too. Every other tool only reads dnlib
-        // metadata — enumerated through GetLoadedModules, never the tree — and runs on the calling
-        // HTTP worker thread, so a whole-program sweep over a big game doesn't freeze dnSpy's UI.
+        // Tools that mutate dnlib state or touch dnSpy's UI objects (document tree nodes, tabs). Inside
+        // dnSpy they run on the WPF UI thread (IMcpHost.InvokeOnUiThread): tree nodes are
+        // DispatcherObjects that throw "calling thread cannot access this object" from any other
+        // thread, and mutating there serializes our edits with AsmEditor's own dialogs, which mutate on
+        // that thread too. Every other tool only reads dnlib metadata — enumerated through
+        // GetLoadedModules, never the tree — and runs on the calling transport thread, so a
+        // whole-program sweep over a big game doesn't freeze dnSpy's UI. Headless, everything is inline.
         static readonly HashSet<string> UiThreadTools = new HashSet<string>(StringComparer.Ordinal)
         {
             "open_files", "patch_method_il", "force_return", "nop_method",
@@ -1035,14 +1026,14 @@ namespace dnSpy.Extension.MCP
 
         // Serializes tool calls, as funneling every call through the UI thread used to: a read never
         // observes a half-applied patch or rename, and two writes never interleave. Only ever taken on
-        // the HTTP worker thread that calls ExecuteTool — writes take it *before* marshaling to the UI
+        // the transport thread that calls ExecuteTool — writes take it *before* marshaling to the UI
         // thread — so the UI thread never waits on it. That is what keeps a reader that needs the
         // dispatcher (McpSettings.Log invokes onto it synchronously) from deadlocking against a writer.
         readonly object toolLock = new object();
 
         /// <summary>
-        /// Executes a specific MCP tool by name with the given arguments. Called on an HTTP worker
-        /// thread, never the UI thread (see <see cref="toolLock"/>). Handler exceptions — including
+        /// Executes a specific MCP tool by name with the given arguments. Called on a transport thread
+        /// (HTTP worker or stdio loop), never the UI thread (see <see cref="toolLock"/>). Handler exceptions — including
         /// the <see cref="ArgumentException"/>s thrown for bad input — come back as an
         /// <c>isError</c> tool result carrying the message, not as a JSON-RPC error, so the model
         /// sees what to fix and can retry (the MCP convention for tool-execution errors).
@@ -1055,7 +1046,7 @@ namespace dnSpy.Extension.MCP
             lock (toolLock)
             {
                 return UiThreadTools.Contains(toolName)
-                    ? InvokeOnUiThread(() => RunTool(toolName, arguments))
+                    ? host.InvokeOnUiThread(() => RunTool(toolName, arguments))
                     : RunTool(toolName, arguments);
             }
         }
@@ -1120,25 +1111,12 @@ namespace dnSpy.Extension.MCP
         }
 
         /// <summary>
-        /// Runs <paramref name="action"/> synchronously on the WPF UI thread, or inline when already
-        /// on it or when there is no live dispatcher (early startup / shutdown).
-        /// </summary>
-        static T InvokeOnUiThread<T>(Func<T> action)
-        {
-            var dispatcher = System.Windows.Application.Current?.Dispatcher;
-            if (dispatcher == null || dispatcher.HasShutdownStarted || dispatcher.CheckAccess())
-                return action();
-            return dispatcher.Invoke(action);
-        }
-
-        /// <summary>
-        /// Loads .NET assemblies/modules from disk into dnSpy's document tree so the other tools can
-        /// analyze them — the programmatic equivalent of dnSpy's File → Open. Each entry in
-        /// <c>paths</c> may be a file (loaded directly) or a directory (every file matching
-        /// <c>pattern</c>, default <c>*.dll</c>, optionally recursive). Loading reads metadata via
-        /// dnlib; it does NOT execute the assembly. <see cref="IDsDocumentService.TryGetOrCreate"/>
-        /// adds the document to the service, and the tree view materializes the node from the
-        /// resulting CollectionChanged event — so this runs on the UI thread (ExecuteTool marshals).
+        /// Loads .NET assemblies/modules from disk into the host so the other tools can analyze them
+        /// — the programmatic equivalent of dnSpy's File → Open. Each entry in <c>paths</c> may be a
+        /// file (loaded directly) or a directory (every file matching <c>pattern</c>, default
+        /// <c>*.dll</c>, optionally recursive). Loading reads metadata via dnlib; it does NOT execute
+        /// the assembly. Runs on the UI thread (ExecuteTool marshals) because inside dnSpy the tree
+        /// view materializes the new node from the document service's CollectionChanged event.
         /// </summary>
         CallToolResult OpenFiles(Dictionary<string, object>? arguments)
         {
@@ -1150,11 +1128,9 @@ namespace dnSpy.Extension.MCP
             var recursive = ReadOptionalBool(arguments, "recursive") ?? false;
             var pattern = ReadOptionalString(arguments, "pattern") ?? "*.dll";
 
-            var docService = documentTreeView.DocumentService;
-
             // Snapshot already-open filenames so we can report new vs. already-loaded.
             var existing = new HashSet<string>(
-                docService.GetDocuments().Select(d => d.Filename).Where(f => !string.IsNullOrEmpty(f)),
+                host.GetDocuments().Select(d => d.Filename).Where(f => !string.IsNullOrEmpty(f)),
                 StringComparer.OrdinalIgnoreCase);
 
             var failed = new List<object>();
@@ -1199,7 +1175,7 @@ namespace dnSpy.Extension.MCP
             {
                 bool wasLoaded = existing.Contains(f);
                 IDsDocument? doc;
-                try { doc = docService.TryGetOrCreate(DsDocumentInfo.CreateDocument(f)); }
+                try { doc = host.OpenDocument(f); }
                 catch (Exception ex) { failed.Add(new { path = f, error = $"{ex.GetType().Name}: {ex.Message}" }); continue; }
                 if (doc == null)
                 {
@@ -1666,7 +1642,7 @@ namespace dnSpy.Extension.MCP
             else
             {
                 var typeDef = (TypeDef)target;
-                var decompiler = decompilerService.Decompiler;
+                var decompiler = host.Decompiler;
                 var output = new StringBuilderDecompilerOutput();
                 decompiler.Decompile(typeDef, output, new DecompilationContext { CancellationToken = System.Threading.CancellationToken.None });
                 text = output.ToString();
@@ -1706,7 +1682,7 @@ namespace dnSpy.Extension.MCP
             if (type == null)
                 throw new ArgumentException($"Type not found: {typeFullName}");
 
-            var decompiler = decompilerService.Decompiler;
+            var decompiler = host.Decompiler;
             var output = new StringBuilderDecompilerOutput();
             decompiler.Decompile(type, output, new DecompilationContext { CancellationToken = System.Threading.CancellationToken.None });
             return new CallToolResult
@@ -1727,7 +1703,7 @@ namespace dnSpy.Extension.MCP
         /// </summary>
         string DecompileMethodToText(MethodDef method, bool includeStateMachine)
         {
-            var decompiler = decompilerService.Decompiler;
+            var decompiler = host.Decompiler;
             var output = new StringBuilderDecompilerOutput();
             var decompilationContext = new DecompilationContext
             {
@@ -2970,15 +2946,15 @@ namespace dnSpy.Extension.MCP
 
         /// <summary>
         /// Every loaded .NET module, once each: the modules of each loaded assembly plus standalone
-        /// module documents. Read through <see cref="IDsDocumentService"/>, never the document tree:
-        /// GetDocuments() snapshots under a lock, so this is safe on the HTTP worker threads the
+        /// module documents. Read through <see cref="IMcpHost.GetDocuments"/>, never dnSpy's document
+        /// tree: that is a lock-protected snapshot, so this is safe on the transport threads the
         /// read-only tools run on, whereas tree nodes are UI-thread-only DispatcherObjects.
         /// </summary>
         List<ModuleDef> GetLoadedModules()
         {
             var modules = new List<ModuleDef>();
             var seen = new HashSet<ModuleDef>();
-            foreach (var doc in documentTreeView.DocumentService.GetDocuments())
+            foreach (var doc in host.GetDocuments())
             {
                 // An assembly document's children are exactly its AssemblyDef.Modules (see dnSpy's
                 // DsDotNetDocument.CreateChildren), so this covers netmodules the tree would show.
@@ -3001,7 +2977,7 @@ namespace dnSpy.Extension.MCP
         {
             var assemblies = new List<(AssemblyDef Assembly, string Filename)>();
             var seen = new HashSet<AssemblyDef>();
-            foreach (var doc in documentTreeView.DocumentService.GetDocuments())
+            foreach (var doc in host.GetDocuments())
             {
                 if (doc.AssemblyDef is AssemblyDef assembly && seen.Add(assembly))
                     assemblies.Add((assembly, doc.Filename ?? string.Empty));
