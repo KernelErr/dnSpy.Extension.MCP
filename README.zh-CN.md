@@ -1,102 +1,204 @@
 # dnSpy MCP 扩展
 
-一个用于 [dnSpyEx](https://github.com/dnSpyEx/dnSpy) 的 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 扩展，向 Claude 等 AI 助手暴露 .NET 程序集的**分析能力**与 **IL 编辑能力**。
+让 Claude 等 AI 助手通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 借助 [dnSpyEx](https://github.com/dnSpyEx/dnSpy) 处理 .NET 程序集：反编译、搜索、追踪交叉引用、修改 IL、重命名符号、生成 BepInEx / Harmony 代码，共 32 个工具。
 
 English: see [README.md](README.md).
 
+## 两种运行方式
+
+| | Headless | 在 dnSpy 内运行 |
+|---|---|---|
+| 运行的是什么 | `dnSpy.Extension.MCP.Headless.exe`，没有窗口 | 扩展本身，运行在 dnSpy 窗口里 |
+| 如何启动 | MCP 客户端需要时自动启动，用完自动关闭 | 打开 dnSpy 并开启 **Enable Server** |
+| 传输方式 | stdio | HTTP，`http://localhost:3000` |
+| 程序集 | 独立加载：AI 用 `open_files` 打开 | dnSpy 里已打开的内容（AI 也可以再打开别的） |
+| 补丁与重命名 | 保存在内存中，`save_assembly` 时写盘 | 同左，并实时显示在 dnSpy 的树和标签页里 |
+| 获取方式 | 一体化压缩包 | 一体化压缩包，或单独的插件 DLL |
+
+两种方式提供相同的工具和资源，端到端测试对两者都会完整运行。只想让 AI 干活就用 headless；想同时自己在 dnSpy 里查看程序集，就用 dnSpy 内的服务器。
+
 ## 快速开始
 
-几分钟内从零到"让 Claude 分析你的程序集"：
+1. **下载**：从 [Releases](https://github.com/KernelErr/dnSpy.Extension.MCP/releases) 下载对应系统的一体化压缩包（[选哪个？](#安装)），解压到任意位置，例如 `C:\Tools\dnSpy`。
+2. **连接 Claude**：在 Claude Code 里任选一种：
+   - 注册 headless 宿主，Claude Code 会在需要时自动启动它：
+     ```bash
+     claude mcp add --scope user dnspy -- "C:\Tools\dnSpy\dnSpy.Extension.MCP.Headless.exe"
+     ```
+   - 或者运行 `dnSpy.exe`，勾选 **视图 → 选项 → MCP Server → Enable Server**，然后注册它的地址：
+     ```bash
+     claude mcp add --scope user --transport http dnspy http://localhost:3000
+     ```
 
-1. **跑起来。** 从 [Releases](https://github.com/KernelErr/dnSpy.Extension.MCP/releases) 下载对应系统的一体化压缩包（MCP 扩展已经打包在里面），解压到任意位置，运行 `dnSpy.exe`。*已经装了 dnSpy？改用[仅插件](#安装) 的 DLL。*
-2. **启用服务器。** 在 dnSpy 里：**视图 → 选项 → MCP Server** → 勾选 **Enable Server** → **OK**。记下该页显示的 **Port**——并查看 **Server Log** 面板里实际绑定的端口（你设的端口被占用时会自动顺延到下一个空闲端口）。下文用 `<端口>` 指代它。验证一下：用浏览器打开 `http://localhost:<端口>/`（会看到状态页），或执行 `curl http://localhost:<端口>/health`。
-3. **加载目标。** 打开你要分析的程序集（**File → Open**，或把 DLL 拖进 dnSpy）——例如 Unity 游戏的 `Assembly-CSharp.dll`。工具操作的是树里已加载的内容。*（也可以跳过这步，连上之后让 AI 帮你加载——见 `open_files`。）*
-4. **接入 AI 客户端。** 以 Claude Code 为例（把 `<端口>` 换成第 2 步里的端口）：
-   ```bash
-   claude mcp add --transport http dnspy http://localhost:<端口>
+   Claude Desktop 和其他客户端见[连接客户端](#连接客户端)。
+3. **提问**，直接用自然语言：
+   > *"打开 `C:\Games\MyGame\MyGame_Data\Managed\Assembly-CSharp.dll`，找出所有用到字符串 `SAVEFILE` 的方法，再把反编译后的 `SaveGame` 方法给我看。"*
+
+   Claude 会自己选择工具（`open_files` → `search_string_literals` → `decompile_method`）。
+
+## 安装
+
+### 一体化压缩包（推荐）
+
+[Releases](https://github.com/KernelErr/dnSpy.Extension.MCP/releases) 上的每个压缩包都是完整的 dnSpy，扩展已经装好，`dnSpy.exe` 旁边还有 headless 宿主。解压到任意位置即可，不需要其他设置。
+
+| 文件 | dnSpy 版本 | 运行要求 |
+|------|-----------|----------|
+| `dnSpy-MCP-win-x64.zip` | .NET 10 自包含 x64 | 无，运行时已内置 |
+| `dnSpy-MCP-win-x86.zip` | .NET 10 自包含 x86 | 无，运行时已内置 |
+| `dnSpy-MCP-net48.zip` | .NET Framework 4.8 | .NET Framework 4.8（Windows 10 及以上自带） |
+
+### 仅插件安装
+
+适用于已经装了 dnSpy、只想加上 dnSpy 内服务器的情况。headless 宿主只在压缩包里提供，压缩包会为它配好所需的运行时。
+
+1. 下载 `dnSpy.Extension.MCP-net10.0-windows.dll`（.NET 版 dnSpy）或 `dnSpy.Extension.MCP-net48.dll`（.NET Framework 版 dnSpy）。
+2. 重命名为 `dnSpy.Extension.MCP.x.dll`，放进 `bin\Extensions` 下同名的文件夹：
    ```
-   其他客户端（Claude Desktop、codex、MCP Inspector）见[客户端配置](#客户端配置)。
-5. **开问。** 直接用自然语言问，例如：
-   > *"在 Assembly-CSharp 里找出所有用到字符串 `SAVEFILE` 的方法，然后把反编译后的 `SaveGame` 方法给我看。"*
+   C:\Tools\dnSpy\bin\Extensions\dnSpy.Extension.MCP\dnSpy.Extension.MCP.x.dll
+   ```
+3. 重启 dnSpy。
 
-   Claude 会自己挑合适的工具（`search_string_literals` → `find_references` → `decompile_method`）。完整能力见[功能](#功能)。
+缺少 `.x` 后缀、或者没有放在自己的文件夹里，dnSpy 都会静默跳过这个 DLL；如果 **视图 → 选项** 里没有 **MCP Server** 页，请检查路径。
 
-> **不想一直开着 dnSpy？** 一体化压缩包里还附带 `dnSpy.Extension.MCP.Headless.exe`，由 MCP 客户端通过 stdio 按需启动——没有窗口、不用设置、不占端口。见 [Headless 模式](#headless-模式)。
+从源码构建见[开发](#开发)。
+
+## 连接客户端
+
+示例假设压缩包解压到 `C:\Tools\dnSpy`，dnSpy 内的服务器使用默认端口 3000。
+
+### Claude Code
+
+```bash
+# Headless
+claude mcp add --scope user dnspy -- "C:\Tools\dnSpy\dnSpy.Extension.MCP.Headless.exe"
+
+# 在 dnSpy 内运行（已勾选 Enable Server）
+claude mcp add --scope user --transport http dnspy http://localhost:3000
+```
+
+`--scope user` 让 `dnspy` 在你的所有项目里可用；不加则只对当前项目生效。之后 `claude mcp list` 应显示 `✔ Connected`（对 headless 宿主，它会启动一个实例来检查），在 Claude Code 里运行 `/mcp` 可以看到它的工具。
+
+想随仓库共享配置，就在仓库根目录放一个 `.mcp.json`（`claude mcp add --scope project …` 会生成它）；每个用户第一次使用时需要在 Claude Code 里批准一次：
+
+```json
+{
+  "mcpServers": {
+    "dnspy": {
+      "type": "stdio",
+      "command": "C:\\Tools\\dnSpy\\dnSpy.Extension.MCP.Headless.exe",
+      "args": []
+    }
+  }
+}
+```
+
+dnSpy 内的服务器则写成 `"dnspy": { "type": "http", "url": "http://localhost:3000" }`。
+
+### Claude Desktop
+
+Claude Desktop 通过 stdio 自己启动本地 MCP 服务器，这正是 headless 宿主的工作方式：
+
+1. 打开 **Settings → Developer → Edit Config**，会打开 `%APPDATA%\Claude\claude_desktop_config.json`。
+2. 在 `mcpServers` 里加上 `dnspy`（这是 JSON，反斜杠要写两个）：
+   ```json
+   {
+     "mcpServers": {
+       "dnspy": {
+         "command": "C:\\Tools\\dnSpy\\dnSpy.Extension.MCP.Headless.exe",
+         "args": []
+       }
+     }
+   }
+   ```
+3. 彻底退出 Claude Desktop（托盘图标 → Quit）后重新打开。**Settings → Developer** 里会显示 `dnspy` 正在运行，对话中即可使用它的工具。
+
+如果启动失败，headless 宿主的日志在 `%APPDATA%\Claude\logs\mcp-server-dnspy.log`。
+
+### 其他客户端
+
+能启动 stdio 服务器的客户端（Cursor、Chatbox、Cline 等）使用与 Claude Desktop 相同的 `command` + `args` 配置。连接 dnSpy 内的服务器时填地址 `http://localhost:3000`（Streamable HTTP）；只支持旧版 SSE 传输的客户端填 `http://localhost:3000/sse`。
+
+codex：
+
+```bash
+codex mcp add dnspy -- "C:\Tools\dnSpy\dnSpy.Extension.MCP.Headless.exe"   # headless
+codex mcp add dnspy --url http://localhost:3000                             # 在 dnSpy 内运行
+```
+
+## Headless 宿主
+
+`dnSpy.Extension.MCP.Headless.exe` 不需要任何参数。它启动时不加载任何程序集，AI 会用 `open_files` 打开需要的文件（单个文件，或一个文件夹下的全部 `*.dll`），相当于 dnSpy 里的 文件 → 打开，所以直接告诉 AI 要分析哪个游戏或程序集即可。
+
+可选开关：`--dnspy <文件夹>`（使用另一个 dnSpy 安装）、`--quiet`（不输出日志）、`--version`、`--help`。作为参数传入的路径会在启动时加载。
+
+与 dnSpy 内的服务器相比：
+
+- **独立进程。** 每个启动它的客户端各有一个实例，看不到 dnSpy 窗口里打开的内容。
+- **不锁定目标文件。** 程序集读入内存，运行期间可以重新编译或替换它们。
+- **使用默认反编译设置**，不带你在 dnSpy 界面里设置的选项。
+- **日志写到 stderr**，客户端会在 MCP 日志里显示；stdout 用于协议通信。
+
+## 在 dnSpy 内运行
+
+设置位于 **视图 → 选项 → MCP Server**，应用后立即生效：
+
+- **Enable Server**：启动或停止服务器。
+- **Port**：默认 `3000`。端口被占用时会依次尝试后面的端口（共 20 个），实际绑定的端口见 **Server Log** 面板。
+- **Host**：默认 `localhost`，`localhost`、`127.0.0.1` 和 `[::1]` 都能访问。
+
+用浏览器打开 `http://localhost:3000/` 会看到状态页；`http://localhost:3000/health` 返回 `{"status":"ok",…}`。
 
 ## 功能
 
-### MCP 工具（共 32 个）
+### 工具
 
-#### 加载
+**加载**
 
-1. **open_files** — 从磁盘把 .NET 程序集/模块加载进 dnSpy（相当于 AI 驱动的 File → Open）。`paths` 接受文件和/或目录——一次打开多个 DLL，或加载某文件夹下全部 `*.dll`（如 Unity 游戏的 `Managed` 目录；支持 `recursive` / `pattern`）。只读元数据，绝不执行。按文件返回 `loaded` / `already_loaded` / `failed`
+- `open_files`：从文件或文件夹加载程序集（例如 Unity 游戏的 `Managed` 文件夹，可递归）。只读取元数据，不执行任何代码。
 
-#### 分析与导航
+**分析与导航**
 
-1. **list_assemblies** — 列出所有已加载的程序集及其元数据和磁盘路径 `Path`（`name_filter` 子串/通配,从几百个 Unity 框架模块里筛出目标）。所有工具的 `assembly_name` 都接受简单名、完整名或这个 `Path`；同名程序集加载了不止一个（同一 DLL 的两份副本或两个版本）时，按名字查找会因歧义被拒绝，此时请传 `Path`
-2. **get_assembly_info** — 查看指定程序集的详细信息（命名空间分页）
-3. **list_types** — 列出程序集或命名空间下的所有类型；分页（`page_size` 可调,`names_only` 紧凑模式）。元数据条目包含 TypeDef `token`。默认包含嵌套类型及编译器生成的状态机（带 `is_nested` / `is_compiler_generated` 标志；`include_nested=false` 仅顶层）。`base_type` 过滤出（传递的）子类,如 `base_type='MonoBehaviour'`
-4. **get_type_info** — 返回 TypeDef `token`、类型泛型参数 Token、带 Token 的字段/属性/事件，以及分页的方法；完整方法条目还含 MethodDef、Param 和方法 GenericParam Token。`compact` 可精简，`members_filter` 可按名称过滤
-5. **list_methods** — 返回方法的 MethodDef Token、参数的 Param Token、方法泛型参数的 GenericParam Token 及 `parameter_types`；可把可重命名 Token 直接传给 `rename_symbol_by_token`
-6. **get_type_fields** — 按通配符匹配类型的字段（如 `*Bonus*`）
-7. **get_type_property** — 获取属性的详细信息，包含 get/set 访问器
-8. **search_types** — 按通配符或子串搜索类型；元数据条目包含 TypeDef `token`；`assembly_name` 限定单个程序集,`names_only` / `page_size` 控制输出。也能匹配嵌套的编译器生成类型（如 `*<Awake>d__*`）
-9. **search_members** — 按通配符或子串搜索**成员**（方法 / 字段 / 属性 / 事件），跨所有程序集（或用 `assembly_name` 限定）；每条命中含 `declaring_type`、`member_kind`、完整 `signature`、`token`（`MDToken`）、`is_static` / `is_public`，可把可重命名 Token 直接传给 `rename_symbol_by_token`
-10. **find_path_to_type** — 基于字段/属性对两个类型做 BFS 路径搜索
-11. **decompile_method** — 将方法反编译为 C#（可通过 `parameter_types` / `method_token` 精确区分重载）。嵌套类型可寻址（`Outer/Inner`，`.`/`+`/`/` 都接受），因此可直接反编译状态机的 `MoveNext`。对 async/iterator 的 kickoff，当反编译器无法把状态机内联回 `await`/`yield` 时（Unity 产物常见），会自动把原始 `MoveNext` 体附在后面（`include_state_machine=false` 可关闭）
-12. **decompile_type** — 按名字反编译**整个类型**（全部成员）为 C#——"点开类看完整源码"的视图，一次拿全。嵌套类型可寻址。类型很大时建议改用 `get_type_info`（compact）或 `decompile_method`
-13. **decompile_by_token** — 仅凭 `MDToken` 反编译方法（或类型），不需要类型名——特别适合直接拿 xref / 字符串搜索 / 成员搜索结果里的 token（建议带 `assembly_name`,token 是按模块唯一的）。与 `decompile_method` 同样的 async/iterator 兜底。所有 token 入参（`token`、`method_token`）都接受十进制 uint 或 `0x` 前缀的十六进制字符串，从 dnSpy 界面复制的 token 可直接使用
+- `list_assemblies`、`get_assembly_info`：已加载的程序集（含文件路径），以及单个程序集的命名空间。
+- `list_types`、`search_types`：按命名空间或名称（子串或 `*` 通配）查找类型，包括嵌套类型和编译器生成的类型；`base_type` 可查找子类，例如 `MonoBehaviour` 的子类。
+- `get_type_info`、`list_methods`、`get_type_fields`、`get_type_property`：类型的成员及其元数据 Token。
+- `search_members`：按名称在所有程序集中搜索方法、字段、属性和事件（相当于 dnSpy 的 Ctrl+Shift+K）。
+- `find_path_to_type`：一个类型如何通过字段和属性到达另一个类型。
+- `decompile_method`、`decompile_type`、`decompile_by_token`：按名称或 Token 把方法或整个类型反编译为 C#。即使反编译器无法把 async / iterator 状态机还原成 `await` / `yield`，状态机的代码也会一并给出。
 
-#### 交叉引用（xref）
+**交叉引用**
 
-1. **find_callers** — 跨所有程序集查找"谁调用了某方法"（call / callvirt / newobj / ldftn）。每条命中含调用者类型/方法、`MDToken`、opcode、IL index/offset
-2. **find_callees** — 反方向：某个方法"用了谁"（它调用的方法、读写的字段、引用的类型），按被引用成员去重，每条带 opcode 集合 + 出现次数 + 已解析的 `MDToken`（对应 dnSpy Analyze 的 "Uses"）
-3. **find_references** — 跨所有程序集查找引用某 `method` / `field` / `type` / `string` 的所有 IL 位置（由 `target_kind` 选择目标种类）
-4. **find_overrides** — 虚方法/接口方法多态（对应 dnSpy Analyze 的 "Overridden By" / "Overrides"）：`direction='overridden_by'` 列出所有重写某类虚方法、**或实现某接口方法**的类型（隐式 + 显式实现，后者用 `is_interface_impl` 标记）——即 `callvirt` 真正可能分发到的具体实现，这是 `find_callers` 给不出的；`direction='overrides'` 沿基类链向上找该方法重写了谁
-5. **find_unity_messages** — 列出某类型（或整个程序集）的 Unity 生命周期/消息方法（`Awake` / `Update` / `OnTriggerEnter` / `OnGUI` / …）。Unity 按名字反射调用它们、IL 里没有调用点，所以 xref 找不到——但它们正是你在 MonoBehaviour 里要 hook 的入口。每条命中带 `parameter_types` + `MDToken`
-6. **find_by_attribute** — 查找带某自定义特性的类型/成员（`[SerializeField]`、`[BepInPlugin]`、`[CompilerGenerated]` 等）——"按约定定位"。特性名匹配可省略 `Attribute` 后缀；`targets` 限定种类（type/method/field/property/event）。每条命中带 `target_kind`、`declaring_type`、`MDToken` 及特性 FullName
+- `find_callers`、`find_callees`：谁调用了某个方法，以及某个方法调用、读写了什么。
+- `find_references`：某个方法、字段、类型或字符串的所有使用位置。
+- `find_overrides`：双向查找重写和接口实现（对应 dnSpy 的 Analyze）。
+- `find_unity_messages`：Unity 的入口方法（`Awake`、`Update`、`OnTriggerEnter` 等），这些方法没有调用点，靠交叉引用找不到。
+- `find_by_attribute`：带有某个特性的类型和成员，例如 `[SerializeField]`、`[BepInPlugin]`。
 
-#### 字符串与常量
+**字符串与常量**
 
-1. **search_string_literals** — 反查：在所有程序集中查找"哪个方法发出了这个字符串（`ldstr`）"。游戏/Unity 逆向中逻辑全靠字符串 key（PlayerPrefs 键、场景名、存档令牌）串联，这是头号刚需。默认大小写不敏感子串匹配，`*` 为整串通配（如 `SAVE*`），可选只在单个程序集内搜。每条命中返回字符串值、所在类型、方法名 + `MDToken`、完整签名、IL index/offset
-2. **list_string_constants** — 列出某个类型（含嵌套类型）或单个方法内的所有 `ldstr` 字符串字面量
-3. **search_constants** — 查找数值常量被用在哪里（`ldc.i4*` / `ldc.i8` / `ldc.r4` / `ldc.r8`）——`search_string_literals` 的数字版（魔法数、物品 ID、阈值）。整数查询匹配整数常量，带小数点的查询匹配浮点常量。用 `assembly_name` 限定范围
+- `search_string_literals`、`list_string_constants`：哪些方法用到了某个字符串；某个类型或方法里的全部字符串。
+- `search_constants`：某个数值在哪里被使用，例如魔法数、物品 ID、阈值。
 
-#### IL 与元数据查看/编辑
+**编辑**
 
-1. **get_method_il** — 方法 IL 指令（index、offset、opcode、operand）+ 局部变量 + 异常处理块 + 方法体标志
-2. **patch_method_il** — 按序执行 `replace` / `insert` / `delete` / `set_init_locals` 编辑；首次补丁会自动快照
-3. **force_return** — 不用手写 IL，直接把方法体改成 `return <值>`（true/false、数字、null 或 `default`）——最常见的"让 `IsPremium()` 返回 true"补丁。void 方法会变成空操作
-4. **nop_method** — 清空方法（void → 单个 `ret`；有返回值 → 返回默认值）。用于让某个 tick/遥测/反作弊调用失效
-5. **revert_method_il** — 回滚到补丁前的方法体（force_return / nop_method 也能回滚）
-6. **rename_symbol_by_token** — 统一的元数据重命名入口。用 `target_kind` 选择 `type` / `class` / `enum` / `interface` / `struct` / `delegate`、`method`、`field`、`enum_member`、`enum_members`、`property`、`event`、`parameter` 或 `generic_parameter`。单个符号传 `new_name`；批量枚举成员传完整的按值映射 `members`。适用时会同步当前模块引用并刷新已打开的反编译标签页
-7. **save_assembly** — 将模块写回磁盘（覆盖原文件时会自动生成带时间戳的备份，`NativeWrite` 保留本机 stub / Win32 资源 / 延迟加载导入，GAC 路径被拒绝）
+- `get_method_il`、`patch_method_il`、`revert_method_il`：读取方法的 IL、编辑（替换 / 插入 / 删除）、撤销。
+- `force_return`、`nop_method`：不用写 IL，让方法返回固定值，或什么都不做。
+- `rename_symbol_by_token`：重命名类型、成员、参数或泛型参数，也可以按值一次性重命名枚举的全部成员。
+- `save_assembly`：把模块写回磁盘，写之前先备份原文件。
 
-#### 代码生成
+**代码生成**
 
-1. **generate_bepinex_plugin** — 生成完整 BepInEx 插件：`BaseUnityPlugin` 外壳（Awake 里 `Harmony.PatchAll`、OnDestroy 取消补丁）+ 每个 hook 一个 `[HarmonyPatch]` 类。每个 hook 都按目标程序集里的真实方法解析，所以补丁是**签名感知**的（真实 `__instance` / `ref __result` / 具名参数），而非空桩；解析不到的 hook 降级为注释。支持每个 hook 的 `patch_type`（postfix/prefix/transpiler）
-2. **generate_harmony_patch** — 针对**真实方法**生成可直接编译的 HarmonyX 补丁类，按其实际签名注入正确参数：postfix 带 `ref <返回类型> __result`、实例方法带 `__instance`、原方法参数按名注入、方法名重载时补 `new Type[]{...}` 消歧。`patch_type` = postfix / prefix（返回 bool 可跳过原方法）/ transpiler
+- `generate_harmony_patch`、`generate_bepinex_plugin`：根据目标方法的真实签名，生成可直接编译的 HarmonyX 补丁，或完整的 BepInEx 插件。
 
-### MCP 资源（共 6 个）
+所有 `assembly_name` 参数都接受简单名、完整名或文件路径；两个已加载的程序集同名时请传路径。Token 可以是十进制，也可以是 dnSpy 界面里显示的 `0x` 十六进制。较长的列表会分页返回。
 
-内嵌的 BepInEx 开发文档，通过 `resources/list` / `resources/read` 提供：
+### 资源
 
-1. **plugin-structure** — 插件基本结构
-2. **harmony-patching** — HarmonyX 补丁指南（Prefix/Postfix/Transpiler）
-3. **configuration** — 配置系统用法
-4. **common-scenarios** — 常见开发场景
-5. **il2cpp-guide** — IL2CPP 开发指南
-6. **mono-vs-il2cpp** — Mono 与 IL2CPP 对比及迁移
+扩展内置六份 BepInEx 指南，通过 `resources/list` / `resources/read` 提供：插件结构、Harmony 补丁、配置、常见场景、IL2CPP，以及 Mono 与 IL2CPP 的对比。
 
-所有文档都内嵌在 DLL 中，**离线可用**。
+## 编辑 IL
 
-## IL 查看与编辑
-
-AI 客户端可以像使用 dnSpy "编辑方法实体" 对话框一样读取、修改、保存字节码。
-
-### 操作数语法（带标签前缀）
-
-每条指令的操作数都是一个带标签的字符串；`get_method_il`（读）与 `patch_method_il`（写）共用同一套语法，因此操作数可以无损往返。
+`get_method_il` 与 `patch_method_il` 把每个操作数写成一个带标签的字符串，读和写使用同一套语法：
 
 | 标签 | 示例 | 对应指令 |
 |------|------|----------|
@@ -115,368 +217,102 @@ AI 客户端可以像使用 dnSpy "编辑方法实体" 对话框一样读取、�
 
 `calli` / `InlineSig` 暂不支持。
 
-### 端到端示例：修改常量并落盘
+比如让 AI *"把 `AddOne` 里的加 1 改成加 41 并保存"*，它会先读取 IL，找到 `{"index":1,"opcode":"ldc.i4.1"}`，然后向 `patch_method_il` 发送编辑 `{"op":"replace","index":1,"opcode":"ldc.i4","operand":"int:41"}`，再调用 `save_assembly`。
 
-假设 `TestIL.dll` 中有 `public static int AddOne(int x) => x + 1;`。
+- **用 `revert_method_il` 撤销**，而不是 Ctrl+Z：这些编辑不经过 dnSpy 的撤销栈。保存之后原方法体依然保留，可以撤销后再保存一次。
+- **覆盖原文件保存时**会先复制一份 `<文件>.<yyyyMMdd-HHmmss>.bak`。GAC 中的程序集会被拒绝。
+- **dnSpy 不会重新加载保存后的文件。** 想看磁盘上的内容，请重新打开该程序集。
+- **只能改指令。** 局部变量和异常处理块可以查看，但不能增删。
 
-```bash
-# 1. 定位方法（parameter_types 可用于区分重载）
-curl -s -X POST http://localhost:3000/ -H "Content-Type: application/json" -d '{
-  "jsonrpc":"2.0","id":1,"method":"tools/call","params":{
-    "name":"list_methods",
-    "arguments":{"assembly_name":"TestIL","type_full_name":"TestIL.Simple"}}}'
+## 故障排查
 
-# 2. 读取 IL
-curl -s -X POST http://localhost:3000/ -H "Content-Type: application/json" -d '{
-  "jsonrpc":"2.0","id":1,"method":"tools/call","params":{
-    "name":"get_method_il",
-    "arguments":{"assembly_name":"TestIL","type_full_name":"TestIL.Simple","method_name":"AddOne"}}}'
-# 返回的 instructions 里会有：{"index":1,"opcode":"ldc.i4.1","operand":""}
+**客户端启动不了 headless 宿主。** 在终端里用 `--version` 运行它：安装完整时会输出版本号；如果它不在 `dnSpy.Console.exe` 旁边，会提示 `couldn't find dnSpy`，请把它留在解压出来的文件夹里。然后查看客户端的 MCP 日志：Claude Desktop 写在 `%APPDATA%\Claude\logs\mcp-server-dnspy.log`；Claude Code 可以看 `claude mcp list`，或用 `claude --debug` 启动。
 
-# 3. 把 +1 改成 +41
-curl -s -X POST http://localhost:3000/ -H "Content-Type: application/json" -d '{
-  "jsonrpc":"2.0","id":1,"method":"tools/call","params":{
-    "name":"patch_method_il",
-    "arguments":{"assembly_name":"TestIL","type_full_name":"TestIL.Simple","method_name":"AddOne",
-      "edits":[{"op":"replace","index":1,"opcode":"ldc.i4","operand":"int:41"}]}}}'
+**Claude Code 显示服务器 "Pending approval"。** 这是项目 `.mcp.json` 里配置的服务器：在该项目里启动 `claude` 并批准即可。
 
-# 4. 保存。覆盖原文件前会先生成 <path>.<yyyyMMdd-HHmmss>.bak 备份
-curl -s -X POST http://localhost:3000/ -H "Content-Type: application/json" -d '{
-  "jsonrpc":"2.0","id":1,"method":"tools/call","params":{
-    "name":"save_assembly",
-    "arguments":{"assembly_name":"TestIL"}}}'
-```
+**设置里没有 MCP Server 页。** dnSpy 没找到这个 DLL，放置位置见[仅插件安装](#仅插件安装)。
 
-重新加载保存后的 DLL，`AddOne(10)` 将返回 **`51`**，而不是原本的 **`11`**。
+**设置页在，但服务器始终不启动。** 扩展加载失败，通常是 DLL 与 dnSpy 的运行时不匹配（在 .NET 版 dnSpy 里放了 `net48` 的 DLL，或者反过来）。Debug 构建还会把日志写到 `D:\dnspy-mcp.log`。
 
-### 注意事项
+**端口被占用。** 服务器会改用下一个空闲端口，并记录 `Port N is in use; falling back to M`；让客户端连接这个端口即可。
 
-- **没有 Ctrl+Z**。`patch_method_il` 不走 dnSpy 的撤销栈，想回退请用 `revert_method_il` — 每个方法在第一次被补丁时自动建立快照，revert 后快照会被清理。快照在 `save_assembly` 之后依然保留，所以写盘后仍可在内存里回退（再保存一次即可落盘）。
-- **保存后 dnSpy 的内存视图不会自动刷新**。要在当前 dnSpy 窗口里看到落盘后的状态，需要重新打开该程序集。
-- **GAC 路径会被拒绝**。保存 `mscorlib` 等 GAC 程序集会返回错误结果。
-- **仅限指令层面**。添加/删除局部变量或异常处理块不在当前范围内；`get_method_il` 会以只读形式暴露它们。
+## 协议与传输
 
-## 安装
+两种宿主都使用基于 JSON-RPC 2.0 的 MCP。`initialize` 时，如果客户端请求的协议版本是 `2025-06-18`、`2025-03-26` 或 `2024-11-05`，就原样返回，否则返回 `2025-06-18`。支持的方法：`initialize`、`ping`、`tools/list`、`tools/call`、`resources/list`、`resources/read`、`resources/templates/list`（始终为空）以及 `notifications/*`；其他方法返回 `-32601`。工具执行失败时返回带 `isError: true` 的结果并附上原因，方便 AI 自行修正。
 
-### 推荐方式：开箱即用的整合包
+headless 宿主使用 stdio：stdin 和 stdout 上每行一条 JSON-RPC 消息。dnSpy 内的服务器在同一个端口上提供三种 HTTP 传输：
 
-打开 [Releases](https://github.com/KernelErr/dnSpy.Extension.MCP/releases) 页面，下载与你系统匹配的整合包 — **扩展已放在正确的位置，不需要操心路径**：
+| 传输 | 端点 | 适用于 |
+|------|------|--------|
+| Streamable HTTP（2025-03-26） | `/` 或 `/mcp` 上的 `POST` / `GET` / `DELETE`，会话 ID 放在 `Mcp-Session-Id` 头里 | Claude Code、codex 及大多数新版客户端 |
+| SSE（2024-11-05） | `GET /sse`，然后 `POST /message?sessionId=<id>` | MCP Inspector、旧版客户端 |
+| 普通 JSON-RPC | `POST /`，`Accept` 中不含 `text/event-stream` | `curl`、脚本 |
 
-| 文件 | 内容 | 运行时要求 |
-|------|------|-------------|
-| `dnSpy-MCP-win-x64.zip` | dnSpy .NET 10 自包含 x64 + MCP 扩展 | 无需 — 运行时已内含 |
-| `dnSpy-MCP-win-x86.zip` | dnSpy .NET 10 自包含 x86 + MCP 扩展 | 无需 — 运行时已内含 |
-| `dnSpy-MCP-net48.zip` | dnSpy .NET Framework 4.8 版 + MCP 扩展 | .NET Framework 4.8（Windows 10+ 默认自带） |
-
-1. 下载并解压到任意目录。
-2. 双击 `dnSpy.exe`。
-3. 打开**视图 → 选项 → MCP Server**，勾选 **Enable Server**，点击确定。
-
-搞定。如果你已经装好了 dnSpy、只想拿插件，参考下面的"仅插件"方式。每个压缩包里 `dnSpy.exe` 旁边还有 [headless 宿主](#headless-模式) `dnSpy.Extension.MCP.Headless.exe`。
-
-### 仅插件（已安装 dnSpy 的用户）
-
-1. 根据 dnSpy 的运行时选择对应 DLL：
-   - `dnSpy.Extension.MCP-net48.dll` — .NET Framework 4.8 版 dnSpy
-   - `dnSpy.Extension.MCP-net10.0-windows.dll` — .NET 10 版 dnSpy
-2. 重命名为 `dnSpy.Extension.MCP.x.dll`（`.x` 后缀是 dnSpy 加载扩展的必要标记）。
-3. 在 `<dnSpy 安装目录>\bin\Extensions\` 下新建一个名为 `dnSpy.Extension.MCP` 的文件夹，把 DLL 放进去。
-4. 重启 dnSpy。
-
-**最终路径必须完全符合下面的层级** — 子文件夹名与 DLL 同名、保留 `.x.dll` 后缀、且恰好位于 `Extensions\` 下一层：
-
-```
-<dnSpy 安装目录>\
-└── bin\
-    └── Extensions\
-        └── dnSpy.Extension.MCP\           ← 子文件夹（不存在则创建）
-            └── dnSpy.Extension.MCP.x.dll  ← 带 .x 后缀的 DLL
-```
-
-假设 dnSpy 安装在 `C:\Tools\dnSpy`，最终路径应该是：
-
-```
-C:\Tools\dnSpy\bin\Extensions\dnSpy.Extension.MCP\dnSpy.Extension.MCP.x.dll
-```
-
-如果 DLL 直接放在 `bin\Extensions\` 下（没有子文件夹），或者丢了 `.x` 后缀，dnSpy 会静默忽略它，设置界面里也看不到 MCP Server 这一项。
-
-[headless 宿主](#headless-模式)只在一体化压缩包里提供：它必须放在 `dnSpy.Console.exe` 旁边，并且按该 dnSpy 的运行时和 CPU 架构构建，压缩包已经替你配好了。
-
-### 从源码构建
-
-```bash
-# 克隆 dnSpyEx（必须带 --recursive 以初始化子模块）
-git clone --recursive https://github.com/dnSpyEx/dnSpy.git
-cd dnSpy
-
-# 将本扩展克隆到 Extensions 目录
-git clone https://github.com/KernelErr/dnSpy.Extension.MCP.git Extensions/dnSpy.Extension.MCP
-
-# 构建（两个 TFM 都会编译）
-cd Extensions/dnSpy.Extension.MCP
-dotnet build -c Release
-
-# 部署到 dnSpy 安装目录
-cp bin/Release/net10.0-windows/dnSpy.Extension.MCP.x.dll \
-   <dnSpy 安装目录>/bin/Extensions/dnSpy.Extension.MCP/
-```
-
-## 配置
-
-配置入口：**视图 → 选项 → MCP Server**
-
-- **Enable Server** — 勾选并应用即可即时启动/停止 HTTP 服务器。
-- **Port** — 首选 TCP 端口（默认 `3000`）。若端口已被占用，扩展会自动尝试 `port + 1`，最多 20 次，并在日志中记录最终绑定的端口。查看 Server Log 面板确认实际端口。
-- **Host** — 绑定地址（默认 `localhost`）。
-
-## Headless 模式
-
-一体化压缩包里 `dnSpy.exe` 旁边还有 **`dnSpy.Extension.MCP.Headless.exe`**：同样的 32 个工具和 6 份资源，通过 MCP **stdio** 传输提供，不需要 dnSpy 窗口。把它注册到 MCP 客户端后，客户端会在需要时自动启动、用完自动关闭，和其他 stdio MCP 服务器一样——不用手动启动、不用设置、不占端口。大多数客户端（Claude Desktop、Cursor、Chatbox 等）都用 `command` + `args` 配置：
-
-```json
-{
-  "mcpServers": {
-    "dnspy": {
-      "command": "C:\\Tools\\dnSpy\\dnSpy.Extension.MCP.Headless.exe",
-      "args": []
-    }
-  }
-}
-```
-
-Claude Code：
-
-```bash
-claude mcp add dnspy -- "C:\Tools\dnSpy\dnSpy.Extension.MCP.Headless.exe"
-```
-
-codex `~/.codex/config.toml`：
-
-```toml
-[mcp_servers.dnspy]
-command = 'C:\Tools\dnSpy\dnSpy.Extension.MCP.Headless.exe'
-args = []
-```
-
-不需要任何参数。它启动时不加载任何程序集，AI 会用 `open_files` 打开需要的文件（单个文件，或一个文件夹下的全部 `*.dll`）——相当于 dnSpy 里的 文件 → 打开——所以直接告诉 AI 要分析哪个游戏或程序集即可。可选开关：`--dnspy <文件夹>`（使用另一个 dnSpy 安装）、`--quiet`（stderr 不输出日志）、`--version`、`--help`；作为参数传入的文件或文件夹路径会被预加载，效果与 `open_files` 相同。
-
-与 dnSpy 内的服务器相比：
-
-- **独立进程，独立的已加载程序集。** 它看不到 dnSpy 窗口里加载的内容，每个启动它的客户端各有一个实例。AI 通过 `open_files` 加载目标。
-- **没有需要同步的界面。** 补丁和重命名对内存中元数据的修改与在 dnSpy 里完全一样，`save_assembly` 也照常写盘，只是没有树和标签页需要刷新。
-- **不锁定目标文件。** 程序集读入内存而不是内存映射，运行期间可以重新编译或替换它们。
-- **默认反编译设置。** 它像 `dnSpy.Console.exe` 一样获取 dnSpy 的 C# 反编译器，不带你在 GUI 里设置的选项。
-- **日志写到 stderr**，因为 stdout 是协议通道；客户端一般会在 MCP 日志里显示。
-
-## 传输协议
-
-三种传输共用同一个 `HttpListener` 与同一端口。服务器根据请求的路径、HTTP 方法与 `Accept` 头自动选择对应的处理逻辑。（[headless 宿主](#headless-模式)则使用 stdio。）
-
-### Streamable HTTP（MCP 2025-03-26）
-
-单端点传输，codex 等新版 MCP 客户端使用。客户端在 POST 时携带 `Accept: application/json, text/event-stream`；服务器在 `initialize` 响应的 `Mcp-Session-Id` 头中分配会话 ID，后续请求需回传该头。同一端点的 `GET` 用于服务端主动推送（SSE），`DELETE` 用于显式结束会话。
-
-会话只保存在 dnSpy 的内存里，重启 dnSpy 后就没了。如果请求带着一个不是本次 dnSpy 进程签发的会话 ID（客户端在 dnSpy 重启后仍沿用旧会话），服务器会直接接纳它而不是拒绝，客户端无需重新连接即可继续使用（有些客户端，比如基于官方 TypeScript SDK 的，自己不会重新初始化）。只有客户端用 `DELETE` 结束过的会话才会返回 `404`。
-
-路径 `/` 与 `/mcp` 均可作为端点。
-
-```bash
-# 1. 初始化 —— 服务器在 Mcp-Session-Id 响应头中返回会话 ID
-curl -i -X POST http://localhost:3000/ \
-  -H "Accept: application/json, text/event-stream" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}'
-# HTTP/1.1 200 OK
-# Mcp-Session-Id: <sid>
-# Content-Type: application/json
-# {"jsonrpc":"2.0","id":1,"result":{...}}
-
-# 2. 后续请求需回传会话头
-curl -X POST http://localhost:3000/ \
-  -H "Accept: application/json, text/event-stream" \
-  -H "Content-Type: application/json" \
-  -H "Mcp-Session-Id: <sid>" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
-
-# 3. 可选：显式结束会话（服务器关闭时也会清理）
-curl -X DELETE http://localhost:3000/ -H "Mcp-Session-Id: <sid>"
-```
-
-codex `~/.codex/config.toml`：
-
-```toml
-[mcp_servers.dnspy-mcp]
-type = "streamable-http"
-url = "http://localhost:3000"
-```
-
-### 普通 HTTP JSON-RPC
-
-一次性请求/响应：向 `/` POST 一个 JSON-RPC 消息（`Accept` 头**不包含** `text/event-stream`），从同一 HTTP 响应体读取结果。适合 `curl` 调试或只会说纯 HTTP 的客户端。
-
-服务器会绑定所有回环地址，因此 `localhost`、`127.0.0.1`、`[::1]` 都能访问。用**浏览器**打开 `http://localhost:<端口>/` 会看到一个简单的状态页（根路径只说 JSON-RPC/SSE，所以浏览器 GET 返回这个页面而不是 404）。
+会话只保存在 dnSpy 的内存里。客户端在 dnSpy 重启后继续使用旧的会话 ID 时，服务器会接受它而不是拒绝，客户端不必重新连接（基于官方 TypeScript SDK 的客户端自己不会重新初始化）；只有客户端用 `DELETE` 结束的会话才会返回 `404`。
 
 ```bash
 curl -s http://localhost:3000/health
-# {"status":"ok","service":"dnSpy MCP Server"}
-curl -s http://127.0.0.1:3000/health   # 同样可用（不止 localhost）
-
-curl -s -X POST http://localhost:3000/ \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}'
+curl -s -X POST http://localhost:3000/ -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
-
-### Server-Sent Events（MCP 2024-11-05，遗留）
-
-为了兼容 MCP Inspector 与旧客户端而保留的双端点传输：一条长连接 SSE 流 + 一个用于客户端消息的 POST 端点。
-
-1. `GET /sse` — 打开 `text/event-stream`。首个事件 (`event: endpoint`) 的 `data` 字段告诉客户端应当 POST 到哪里（`/message?sessionId=<id>`）。
-2. `POST /message?sessionId=<id>` — 客户端发送 JSON-RPC 请求，服务器立即返回 `202 Accepted`，真正的 JSON-RPC 响应作为 `event: message` 写回对应的 SSE 流。
-
-```bash
-# 终端 A：打开 SSE 流并保持
-curl -N http://localhost:3000/sse
-# event: endpoint
-# data: /message?sessionId=<sessionId>
-# ...（POST 到达后）...
-# event: message
-# data: {"jsonrpc":"2.0","id":1,"result":...}
-
-# 终端 B：向对应会话发送请求
-curl -X POST "http://localhost:3000/message?sessionId=<sessionId>" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}'
-# HTTP 202 Accepted — 实际响应出现在终端 A 的 SSE 流里
-```
-
-### 客户端配置
-
-#### Claude Code
-
-命令行一键注册（自动走根路径下的 Streamable HTTP 传输）：
-
-```bash
-claude mcp add --transport http dnspy http://localhost:3000
-# 验证是否注册成功：
-claude mcp list
-```
-
-或在项目根目录写入 `.mcp.json`（把配置跟项目一起提交）：
-
-```json
-{
-  "mcpServers": {
-    "dnspy": {
-      "type": "http",
-      "url": "http://localhost:3000"
-    }
-  }
-}
-```
-
-在 Claude Code 里运行 `/mcp` 可以确认 `dnspy` 已连接，并查看它暴露的工具。
-
-#### Claude Desktop
-
-Claude Desktop 通过 stdio 启动本地 MCP 服务器，这正是 headless 宿主的工作方式：`claude_desktop_config.json` 的配置见 [Headless 模式](#headless-模式)。
-
-#### codex
-
-参见上文 "Streamable HTTP" 章节里的 `~/.codex/config.toml` 示例。
 
 ## 开发
 
+扩展需要在 [dnSpyEx](https://github.com/dnSpyEx/dnSpy) 的检出目录里构建，并使用 CI 固定的标签（工作流里的 `DNSPY_REF`，目前是 `v6.6.0`）：
+
 ```bash
-# 单 TFM 构建，迭代更快
-dotnet build -c Debug -f net48
-dotnet build -c Debug -f net10.0-windows
+git clone --recursive --branch v6.6.0 https://github.com/dnSpyEx/dnSpy.git
+cd dnSpy
+git clone https://github.com/KernelErr/dnSpy.Extension.MCP.git Extensions/dnSpy.Extension.MCP
+cd Extensions/dnSpy.Extension.MCP
 
-# headless 宿主（两个 TFM；会顺带构建扩展）
-dotnet build headless -c Release
-
-# 端到端测试：针对 dnSpy 界面 + HTTP 服务器，或通过 stdio 针对 headless 宿主
-pwsh tests/fixtures/run-tests.ps1
-pwsh tests/fixtures/run-tests.ps1 -Headless
+dotnet build -c Release                     # 扩展，net48 + net10.0-windows
+dotnet build headless -c Release            # headless 宿主（会顺带构建扩展）
+dotnet build -c Debug -f net10.0-windows    # 只构建一个 TFM，迭代更快
 ```
+
+要在 dnSpy 里试用构建结果，把 `bin/<Config>/<TFM>/dnSpy.Extension.MCP.x.dll` 复制到 `<dnSpy>\bin\Extensions\dnSpy.Extension.MCP\`。
+
+**改动必须在两种模式下都通过端到端测试。** 测试针对上层检出目录里构建的 dnSpy 运行，所以要先构建它：在 dnSpy 根目录运行 `./build.ps1 -buildtfm net`（跑 net48 时用 `-buildtfm netframework`；只装了 .NET SDK 时加 `-NoMsbuild`）：
+
+```powershell
+pwsh tests/fixtures/run-tests.ps1                  # 在 dnSpy 内，走 HTTP
+pwsh tests/fixtures/run-tests.ps1 -Headless        # headless 宿主，走 stdio
+pwsh tests/fixtures/run-tests.ps1 -Tfm net48       # 任一模式，针对 .NET Framework 版
+```
+
+测试会构建一个小的测试程序集（`tests/fixtures/TestIL.cs`），加载后调用所有工具，一直测到打补丁、保存、运行保存后的 DLL。CI 不跑这套测试，合并前请在两种模式下各跑一遍。
+
+架构、约定及其背后的原因见 [CLAUDE.md](CLAUDE.md)。
 
 ### 项目结构
 
 ```
 dnSpy.Extension.MCP/
-├── .github/workflows/          GitHub Actions（构建与发布）
-├── McpServer.cs                HttpListener：HTTP + SSE + Streamable HTTP + 端口自动回退
-├── McpDispatcher.cs            与传输无关的 JSON-RPC 分派（initialize / 工具 / 资源）
-├── IMcpHost.cs                 工具需要宿主提供的能力（文档、反编译器、界面钩子）
-├── DnSpyMcpHost.cs             dnSpy 内的 IMcpHost：文档服务、反编译器、树/标签页刷新
-├── McpProtocol.cs              JSON-RPC 2.0 / MCP 数据模型
-├── McpTools.cs                 分析类工具 + MEF 导出 + 请求分派与线程调度（sealed partial）
-├── McpTools.IL.cs              IL 查看/补丁/回滚/保存 + 操作数渲染器与解析器
-├── McpTools.Strings.cs         字符串字面量与数值常量搜索
-├── McpTools.Xref.cs            find_callers / find_callees / find_references / find_overrides
-├── McpTools.RenameSymbol.cs    rename_symbol_by_token 入口 + 类型/字段/属性/事件/参数等处理函数
-├── McpTools.Rename.cs          方法重命名核心 + 枚举成员批量重命名
-├── McpSettings.cs              设置视图模型 + 持久化 + 日志（磁盘日志仅 Debug 构建）
-├── McpSettingsPage.cs          实现 IAppSettingsPageProvider，接入 dnSpy 设置界面
-├── BepInExResources.cs         内嵌的 BepInEx 文档（6 份资源）
-├── TheExtension.cs             IExtension 入口，Loaded 时启动服务器
-├── headless/                   headless 宿主：stdio 可执行文件（无 dnSpy 窗口）+ deploy-headless.ps1
+├── .github/workflows/          build.yml（每次 push / PR）、release.yml（发布 Release 时）
+├── McpServer.cs                HTTP 服务器：普通 JSON-RPC、SSE、Streamable HTTP、端口回退
+├── McpDispatcher.cs            两种宿主共用的 JSON-RPC 分派
+├── McpProtocol.cs              JSON-RPC / MCP 数据类型
+├── IMcpHost.cs                 工具需要宿主提供的能力
+├── DnSpyMcpHost.cs             dnSpy 内的宿主实现：文档、反编译器、树/标签页刷新
+├── McpTools*.cs                32 个工具（分析、IL、字符串、交叉引用、重命名）
+├── McpSettings*                设置页、设置持久化与日志
+├── BepInExResources.cs         内置的六份指南
+├── TheExtension.cs             入口：dnSpy 加载时启动服务器
+├── headless/                   headless 宿主与 deploy-headless.ps1
 ├── tests/check-host-deps.ps1   net48 依赖版本守卫（CI 会运行）
-├── tests/fixtures/             TestIL.cs + build-fixture.ps1 + run-tests.ps1（端到端测试）
-└── dnSpy.Extension.MCP.csproj
+└── tests/fixtures/             测试程序集与端到端测试
 ```
 
-### 架构要点
+## CI 与发布
 
-- **目标框架**：`net48` 与 `net10.0-windows`（继承自 `DnSpyCommon.props`）。
-- **传输**：单个 `HttpListener` 同时承载普通 HTTP JSON-RPC、2024-11-05 SSE、2025-03-26 Streamable HTTP 三种协议，共用同一端口。**不**使用 Kestrel — dnSpy 的自包含 .NET 发布版不会捆绑 ASP.NET Core，任何对 `Microsoft.AspNetCore.*` 的引用都会让 MEF 在组合 `IExtension` 时抛出静默的 `TypeLoadException`，扩展入口因此无法实例化。
-- **MEF**：服务使用 `[Export(typeof(T))]` + `[ImportingConstructor]`。在 dnSpy 内不要手动 `new` `McpServer` / `McpSettings` / `McpTools`。
-- **两种宿主，一套工具**：`McpTools` 只通过 `IMcpHost` 与宿主交互。在 dnSpy 内是 `DnSpyMcpHost`（dnSpy 的文档服务、界面里选中的反编译器、重命名后的树/标签页刷新）；headless 宿主则用自己的文档列表、像 `dnSpy.Console.exe` 那样加载的 dnSpy C# 反编译器，并且没有界面。JSON-RPC 处理放在与传输无关的 `McpDispatcher` 里，dnSpy 内由 HTTP 服务器调用，headless 宿主由 stdio 调用。
-- **headless 部署**在每个发布包里都与 `dnSpy.Console.exe` 保持一致（`headless/deploy-headless.ps1`）：exe 放在 `dnSpy.Console.exe` 旁边，复用该包自己的运行时配置（net48 用 `dnSpy.exe.config`，net10 用 `dnSpy.Console.runtimeconfig.json`），因此与该包一样是框架依赖或自包含。net10 下 apphost 用 dnSpy 的 AppHostPatcher 修补，且必须与该包的 CPU 架构一致。
-- **线程模型**：`ExecuteTool` 用一把锁串行化所有工具调用。只读工具直接在 HTTP 工作线程上执行，通过 `IDsDocumentService`（内部有锁，可在非 UI 线程安全使用）枚举已加载模块，绝不触碰文档树（树节点是只能在 UI 线程访问的 `DispatcherObject`），因此大范围扫描不会卡住 dnSpy 界面。会修改元数据或触碰树/标签页的工具（`open_files`、IL 补丁/回滚/保存类工具、`rename_symbol_by_token`）会被调度到 WPF UI 线程执行，这样也与 AsmEditor 自身的编辑操作串行。
-- **错误码**：工具处理函数里抛出的异常（包括参数非法时抛的 `ArgumentException`）会作为 `isError: true` 的工具结果返回，并带上错误信息，方便模型看到后自行修正重试。JSON-RPC 错误只用于协议层面：未知方法 → `-32601`，`tools/call` / `resources/read` 参数格式不对 → `-32602`，其他 → `-32603`。
-- **日志**：`McpSettings.Log(...)` 总会写 UI 日志面板，只在 **Debug** 构建下额外写入 `D:\dnspy-mcp.log`。Release 构建完全靠内存日志，终端用户机器无需可写 `D:` 盘。
-
-## 协议
-
-基于 [MCP](https://modelcontextprotocol.io/)，走 JSON-RPC 2.0。`initialize` 会协商协议版本：客户端请求的版本若是 `2025-06-18` / `2025-03-26` / `2024-11-05` 之一就原样返回，否则返回 `2025-06-18`。`serverInfo.version` 是扩展自身的发布版本号。
-
-支持的方法：`initialize`、`ping`、`tools/list`、`tools/call`、`resources/list`、`resources/templates/list`（始终为空）、`resources/read`，以及 `notifications/*`。其他方法一律返回 JSON-RPC `-32601`（Method not found）。
-
-## CI / 发布
-
-- `.github/workflows/build.yml` — 每次 push/PR 先检查 net48 依赖版本（`tests/check-host-deps.ps1`），再以 Debug 和 Release 构建扩展和 headless 宿主的两个 TFM。
-- `.github/workflows/release.yml` — 在 GitHub 上**发布** Release 时触发（也可对已有标签手动触发）；只推送标签不会触发。它会做同样的依赖检查，构建 dnSpy、扩展和 headless 宿主（把标签去掉开头的 `v` 作为 `serverInfo.version`；headless 的 apphost 按每个包的 CPU 架构各构建一次），把两者部署进每个包，再把一体包和单独的 DLL 附到该 Release 上。
+- `build.yml`：每次 push 和 PR 都会运行，先做 net48 依赖检查（`tests/check-host-deps.ps1`），再以 Debug 和 Release 构建扩展和 headless 宿主。
+- `release.yml`：在 GitHub 上**发布** Release 时运行，只推送标签不会触发。它会按固定的标签构建 dnSpy，把发布版本号写入扩展，把扩展和 headless 宿主部署进每个包，再把压缩包和 DLL 附到该 Release 上。
 
 ```bash
-git tag v0.1.15
-git push origin v0.1.15
+git tag v0.1.15 && git push origin v0.1.15
 gh release create v0.1.15 --title v0.1.15 --notes "..."   # 发布 Release 才会触发 release.yml
 ```
-
-## 技术细节
-
-- **依赖**：`dnSpy.Contracts.DnSpy`、`dnSpy.Contracts.Logic`、`dnlib`；`System.Text.Json`（`net48` 通过 NuGet 包，`net10.0-windows` 随 BCL）。
-- **BFS 路径查找**：`find_path_to_type` 对每个类型的字段和属性做广度优先搜索。
-- **反编译**：通过 `IDecompilerService` 使用 dnSpy 默认反编译器（默认 C#）。
-- **IL 写盘**：`save_assembly` 对从磁盘加载的模块调用 `((ModuleDefMD)module).NativeWrite(path, NativeModuleWriterOptions)`（保留本机 stub、Win32 资源、延迟加载导入、混合代码）；对内存里新建的模块调用 `module.Write(path, ModuleWriterOptions)`。落盘前先通过 `peImage as dnlib.PE.IInternalPEImage` 关闭内存映射 I/O — `dnSpy.AsmEditor` 里的 `IMmapDisabler` 是 internal，因此直接内联一行调用，避免把 AsmEditor 作为依赖。
-- **跨方法引用解析**：`patch_method_il` 里 `method:` / `field:` / `type:` 操作数按 `FullName` 精确匹配解析（先在被补丁方法所在的模块里找，再找其他已加载模块），然后用 `new Importer(module, ImporterOptions.TryToUseDefs)` 导入到目标模块。
-
-## 故障排查
-
-### 设置页面出现但服务器不启动
-
-最常见原因：`IExtension` 那一半在 MEF 组合时失败（而 `IAppSettingsPageProvider`，即设置页面那一半仍能正常组合）。典型症状：MCP Server 设置页面存在并且能勾选 Enable Server，但点击 OK 没反应、日志里什么都没出现。根因通常是运行时依赖缺失 — 先看磁盘回退日志（只有 Debug 构建会写，路径 `D:\dnspy-mcp.log`），并确认部署的 DLL 与 dnSpy 当前的 TFM 对应。
-
-### 端口被占用
-
-服务器会自动尝试 `port + 1`，最多 20 次。在日志里查找 `Port N is in use; falling back to M`，客户端改连回退后的端口即可。
-
-### 构建错误
-
-- 确认 dnSpyEx 用 `--recursive` 克隆，且子模块已初始化。
-- 在 dnSpyEx 仓库根目录先执行 `dotnet restore`。
-- 需要 .NET 10 SDK（`DnSpyCommon.props` 是权威依据）。
 
 ## License
 
