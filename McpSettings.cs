@@ -84,6 +84,12 @@ namespace dnSpy.Extension.MCP {
 #endif
 
 		/// <summary>
+		/// Raised with every timestamped <see cref="Log"/> entry. The headless host mirrors the log to
+		/// stderr through it, since its stdout carries the MCP protocol.
+		/// </summary>
+		public event Action<string>? Logged;
+
+		/// <summary>
 		/// Adds a log message with timestamp to the log collection. In DEBUG builds the entry is
 		/// also mirrored to an on-disk log file so that startup problems are captured even when the
 		/// WPF dispatcher or settings dialog is unavailable. Release builds only keep the in-memory
@@ -93,6 +99,7 @@ namespace dnSpy.Extension.MCP {
 		public void Log(string message) {
 			var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
 			var logEntry = $"[{timestamp}] {message}";
+			Logged?.Invoke(logEntry);
 
 #if DEBUG
 			// Debug-only: mirror to disk. UI writes can fail silently if the dispatcher is unavailable,

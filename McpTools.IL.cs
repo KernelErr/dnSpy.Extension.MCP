@@ -12,9 +12,9 @@ namespace dnSpy.Extension.MCP
     // IL view / patch / save handlers. Lives as a partial so the MEF export + dispatch switch
     // stay in McpTools.cs; this file is just handlers + IL helpers.
     //
-    // Threading is decided by ExecuteTool, not here: every handler runs under toolLock, and the
-    // mutating ones (patch / force_return / nop / revert / save) on the WPF UI thread so they
-    // serialize with AsmEditor's own Edit-Method-Body dialog, which mutates Body on that thread.
+    // Threading is decided by ExecuteTool, not here: every handler runs under toolLock, and inside
+    // dnSpy the mutating ones (patch / force_return / nop / revert / save) run on the WPF UI thread so
+    // they serialize with AsmEditor's own Edit-Method-Body dialog, which mutates Body on that thread.
     sealed partial class McpTools
     {
         // Snapshot store for revert_method_il, populated lazily on a method's first patch. Keyed by
@@ -582,9 +582,9 @@ namespace dnSpy.Extension.MCP
 
             // Locate the loaded document for this module's filename so we can read
             // the on-disk Location and disable its memory-mapped file handle.
-            var ownerDoc = documentTreeView.DocumentService.GetDocuments()
+            var ownerDoc = host.GetDocuments()
                 .FirstOrDefault(d => d.AssemblyDef == assembly)
-                ?? documentTreeView.DocumentService.GetDocuments()
+                ?? host.GetDocuments()
                     .FirstOrDefault(d => d.ModuleDef == module);
 
             var originalPath = ownerDoc?.Filename;
@@ -617,7 +617,7 @@ namespace dnSpy.Extension.MCP
             // Disable memory-mapped I/O on every loaded document whose filename matches
             // the target. Matches AsmEditor's MmapDisabler pattern — a single file may
             // be referenced by more than one IDsDocument (main file, resources, etc.).
-            foreach (var doc in documentTreeView.DocumentService.GetDocuments())
+            foreach (var doc in host.GetDocuments())
             {
                 if (string.IsNullOrEmpty(doc.Filename))
                     continue;

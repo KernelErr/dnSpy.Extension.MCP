@@ -109,6 +109,23 @@ jobs:
           $version = '${{ steps.tag.outputs.name }}' -replace '^v', ''
           dotnet build -c Release "-p:McpExtensionVersion=$version"
 
+      # The headless host (stdio, no dnSpy window) ships inside each bundle next to
+      # dnSpy.Console.exe. Same version stamp, so it reports the same serverInfo.version.
+      - name: Build headless MCP host (both TFMs)
+        shell: pwsh
+        working-directory: dnSpy\Extensions\dnSpy.Extension.MCP\headless
+        run: |
+          $version = '${{ steps.tag.outputs.name }}' -replace '^v', ''
+          dotnet build -c Release "-p:McpExtensionVersion=$version"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # Each self-contained bundle needs an apphost of its own architecture: the bundle's runtime
+          # in bin\ is native, and an x64 apphost can't load the x86 bundle's hostfxr. The managed
+          # DLL is the same AnyCPU build either way.
+          foreach ($rid in 'win-x64', 'win-x86') {
+            dotnet build -c Release -f net10.0-windows -r $rid --self-contained false "-p:McpExtensionVersion=$version"
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+
       - name: Bundle dnSpy + extension per TFM
         shell: pwsh
         run: |
@@ -117,12 +134,14 @@ jobs:
           $releaseRoot = "dnSpy\dnSpy\dnSpy\bin\Release"
           $extNet48 = "dnSpy\Extensions\dnSpy.Extension.MCP\bin\Release\net48\dnSpy.Extension.MCP.x.dll"
           $extNet10 = "dnSpy\Extensions\dnSpy.Extension.MCP\bin\Release\net10.0-windows\dnSpy.Extension.MCP.x.dll"
+          $headlessOut = "dnSpy\Extensions\dnSpy.Extension.MCP\headless\bin\Release"
+          $deployHeadless = "dnSpy\Extensions\dnSpy.Extension.MCP\headless\deploy-headless.ps1"
 
-          # Bundle descriptors: (zip suffix, dnSpy deployment root, matching extension DLL)
+          # Bundle descriptors: (zip suffix, dnSpy deployment root, matching extension DLL, headless build)
           $bundles = @(
-              @{ name = "net48";   src = "$releaseRoot\net48";                           dll = $extNet48 },
-              @{ name = "win-x64"; src = "$releaseRoot\net10.0-windows\win-x64\publish"; dll = $extNet10 },
-              @{ name = "win-x86"; src = "$releaseRoot\net10.0-windows\win-x86\publish"; dll = $extNet10 }
+              @{ name = "net48";   src = "$releaseRoot\net48";                           dll = $extNet48; headless = "$headlessOut\net48" },
+              @{ name = "win-x64"; src = "$releaseRoot\net10.0-windows\win-x64\publish"; dll = $extNet10; headless = "$headlessOut\net10.0-windows\win-x64" },
+              @{ name = "win-x86"; src = "$releaseRoot\net10.0-windows\win-x86\publish"; dll = $extNet10; headless = "$headlessOut\net10.0-windows\win-x86" }
           )
 
           New-Item -ItemType Directory -Force -Path release | Out-Null
@@ -136,6 +155,9 @@ jobs:
               $destDir = Join-Path $b.src "bin\Extensions\dnSpy.Extension.MCP"
               New-Item -ItemType Directory -Force -Path $destDir | Out-Null
               Copy-Item -Path $b.dll -Destination $destDir
+
+              # Next to dnSpy.Console.exe, laid out exactly like it (AppHostPatcher'd for the net10 bundles).
+              & $deployHeadless -DnSpyDir $b.src -BuildOutput $b.headless
 
               $zip = "release\dnSpy-MCP-$($b.name).zip"
               Compress-Archive -Path "$($b.src)\*" -DestinationPath $zip -Force

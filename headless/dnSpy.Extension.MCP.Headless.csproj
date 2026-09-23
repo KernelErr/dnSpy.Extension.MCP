@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+
+  <!--
+    Headless host: serves the extension's MCP tools over stdio, without the dnSpy window, so an MCP
+    client can launch it on demand. It is deployed next to dnSpy.Console.exe (deploy-headless.ps1)
+    and, like dnSpy.Console.exe, loads dnSpy's own assemblies from the installation at runtime; the
+    extension DLL comes from bin\Extensions\dnSpy.Extension.MCP\ (see AssemblyResolution).
+  -->
+
+  <Import Project="..\..\..\DnSpyCommon.props" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>dnSpy.Extension.MCP.Headless</AssemblyName>
+    <RootNamespace>dnSpy.Extension.MCP.Headless</RootNamespace>
+    <Nullable>enable</Nullable>
+    <!-- dnSpy.Contracts.DnSpy and the extension are WPF assemblies. Like dnSpy.Console, reference
+         WPF but stay a console exe: stdio is the whole point. -->
+    <UseWPF>true</UseWPF>
+    <DisableWinExeOutputInference>true</DisableWinExeOutputInference>
+    <!-- As dnSpy.Console: on .NET Framework run 64-bit on a 64-bit OS; a big game's assemblies can
+         outgrow a 32-bit address space. -->
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <!-- Deployed without a deps.json, the .NET host treats every assembly in the app directory (the
+         directory holding dnSpy.Console.dll, i.e. all of dnSpy's) as an app assembly. A deps.json
+         would instead pin the exact files of this build, which the deployed layout doesn't have. -->
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+  </PropertyGroup>
+
+  <!-- The extension and its dependencies are copied into the build output, so a dev build runs from
+       there (pointed at a dnSpy build for the decompiler). A deployment ships only this exe/DLL: the
+       rest, and the net48 .exe.config / net10 runtimeconfig, come from the dnSpy bundle
+       (deploy-headless.ps1). -->
+  <ItemGroup>
+    <ProjectReference Include="..\dnSpy.Extension.MCP.csproj" />
+  </ItemGroup>
+
+</Project>

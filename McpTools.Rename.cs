@@ -68,52 +68,20 @@ namespace dnSpy.Extension.MCP
                 .ToList();
 
             var newUtf8Name = new UTF8String(newName);
-            var methodNode = documentTreeView.FindNode(method);
-            var parentNode = methodNode?.TreeNode.Parent;
-            var originalIndex = parentNode == null || methodNode == null
-                ? -1
-                : parentNode.Children.IndexOf(methodNode.TreeNode);
-            var wasSelected = methodNode != null && methodNode.TreeNode.TreeView.SelectedItem == methodNode;
-
-            try
-            {
-                // Reinsert a visible node so the declaring type's method sort order is recalculated.
-                if (parentNode != null && methodNode != null && originalIndex >= 0)
-                    parentNode.Children.RemoveAt(originalIndex);
-
-                method.Name = newUtf8Name;
-                foreach (var (memberRef, _) in memberRefs)
-                    memberRef.Name = newUtf8Name;
-
-                if (parentNode != null && methodNode != null && originalIndex >= 0)
-                    parentNode.AddChild(methodNode.TreeNode);
-            }
-            catch
-            {
-                method.Name = new UTF8String(oldName);
-                foreach (var (memberRef, memberRefOldName) in memberRefs)
-                    memberRef.Name = memberRefOldName;
-                if (parentNode != null && methodNode != null && originalIndex >= 0)
+            host.ApplyRename(method, module,
+                rename: () =>
                 {
-                    var currentIndex = parentNode.Children.IndexOf(methodNode.TreeNode);
-                    if (currentIndex >= 0)
-                        parentNode.Children.RemoveAt(currentIndex);
-                    parentNode.Children.Insert(Math.Min(originalIndex, parentNode.Children.Count), methodNode.TreeNode);
-                }
-                throw;
-            }
-
-            try
-            {
-                if (wasSelected && methodNode != null)
-                    methodNode.TreeNode.TreeView.SelectItems(new[] { methodNode });
-                methodNode?.TreeNode.RefreshUI();
-            }
-            catch (Exception ex)
-            {
-                settings.Log($"rename_symbol_by_token[method] UI refresh warning: {ex.Message}");
-            }
-            RefreshDecompiledViews(module, "rename_symbol_by_token");
+                    method.Name = newUtf8Name;
+                    foreach (var (memberRef, _) in memberRefs)
+                        memberRef.Name = newUtf8Name;
+                },
+                rollback: () =>
+                {
+                    method.Name = new UTF8String(oldName);
+                    foreach (var (memberRef, memberRefOldName) in memberRefs)
+                        memberRef.Name = memberRefOldName;
+                },
+                "rename_symbol_by_token[method]");
 
             var updatedMemberReferences = memberRefs
                 .Select(r => r.memberRef.MDToken.Raw)
@@ -128,111 +96,6 @@ namespace dnSpy.Extension.MCP
 
             return CreateRenameMethodResult(
                 module, method, token, oldName, oldFullName, updatedMemberReferences, changed: true);
-        }
-
-        CallToolResult RenameClassOrEnumSymbolCore(Dictionary<string, object>? arguments)
-        {
-            if (arguments == null)
-                throw new ArgumentException("Arguments required");
-
-            var token = ReadOptionalUInt(arguments, "token")
-                ?? throw new ArgumentException("token is required (TypeDef MDToken.Raw — decimal uint or '0x' hex string)");
-            if ((token & 0xFF000000U) != 0x02000000U)
-                throw new ArgumentException($"Token 0x{token:X8} is not a TypeDef token (expected table prefix 0x02).");
-
-            var newName = ReadOptionalString(arguments, "new_name")
-                ?? throw new ArgumentException("new_name is required and cannot be empty");
-            newName = newName.Trim();
-            if (newName.IndexOf('\0') >= 0)
-                throw new ArgumentException("new_name cannot contain a NUL character");
-
-            var assemblyName = ReadOptionalString(arguments, "assembly_name");
-            var (module, type) = ResolveTypeByToken(token, assemblyName);
-
-            if (type.IsGlobalModuleType)
-                throw new ArgumentException("The special <Module> type cannot be renamed.");
-            if (!type.IsEnum && (type.IsInterface || type.IsValueType))
-                throw new ArgumentException(
-                    $"Type {type.FullName} is neither a class nor an enum. This tool does not rename interfaces or structs.");
-
-            var oldName = type.Name.String;
-            var oldFullName = type.FullName;
-            var typeKind = type.IsEnum ? "enum" : "class";
-
-            if (string.Equals(oldName, newName, StringComparison.Ordinal))
-                return CreateRenameTypeResult(module, type, token, typeKind, oldName, oldFullName, 0, changed: false);
-
-            var duplicate = type.DeclaringType != null
-                ? type.DeclaringType.NestedTypes.Any(t => t != type && t.Name.String == newName)
-                : module.Types.Any(t => t != type && t.Namespace.String == type.Namespace.String && t.Name.String == newName);
-            if (duplicate)
-                throw new ArgumentException(
-                    $"A sibling type named '{newName}' already exists in {(type.DeclaringType?.FullName ?? type.Namespace.String)}.");
-
-            // Match dnSpy's own Edit Type command: update TypeRefs in the declaring module before
-            // changing the TypeDef name. Without this, member signatures backed by TypeRef rows can
-            // keep rendering the old name after the definition itself has been renamed.
-            var comparer = new TypeEqualityComparer(RenameTypeComparerOptions);
-            var typeRefs = module.GetTypeRefs()
-                .Where(t => comparer.Equals(t, type))
-                .ToArray();
-
-            var newUtf8Name = new UTF8String(newName);
-            var typeNode = documentTreeView.FindNode(type);
-            var parentNode = typeNode?.TreeNode.Parent;
-            var originalIndex = parentNode == null || typeNode == null
-                ? -1
-                : parentNode.Children.IndexOf(typeNode.TreeNode);
-            var wasSelected = typeNode != null && typeNode.TreeNode.TreeView.SelectedItem == typeNode;
-
-            try
-            {
-                // Reinsert a visible node so its parent's sort order is recalculated.
-                if (parentNode != null && typeNode != null && originalIndex >= 0)
-                    parentNode.Children.RemoveAt(originalIndex);
-
-                type.Name = newUtf8Name;
-                foreach (var typeRef in typeRefs)
-                    typeRef.Name = newUtf8Name;
-
-                if (parentNode != null && typeNode != null && originalIndex >= 0)
-                    parentNode!.AddChild(typeNode!.TreeNode);
-            }
-            catch
-            {
-                type.Name = new UTF8String(oldName);
-                foreach (var typeRef in typeRefs)
-                    typeRef.Name = new UTF8String(oldName);
-                if (parentNode != null && typeNode != null && originalIndex >= 0)
-                {
-                    var currentIndex = parentNode.Children.IndexOf(typeNode.TreeNode);
-                    if (currentIndex >= 0)
-                        parentNode.Children.RemoveAt(currentIndex);
-                    parentNode.Children.Insert(Math.Min(originalIndex, parentNode.Children.Count), typeNode.TreeNode);
-                }
-                throw;
-            }
-
-            // UI refresh failures must not report the metadata operation as failed after it has
-            // already committed. Log the warning; the renamed metadata can still be saved.
-            try
-            {
-                if (wasSelected && typeNode != null)
-                    typeNode.TreeNode.TreeView.SelectItems(new[] { typeNode });
-                typeNode?.TreeNode.RefreshUI();
-            }
-            catch (Exception ex)
-            {
-                settings.Log($"rename_symbol_by_token[type] UI refresh warning: {ex.Message}");
-            }
-            RefreshDecompiledViews(module, "rename_symbol_by_token");
-
-            settings.Log(
-                $"rename_symbol_by_token[{typeKind}]: {module.Assembly?.Name.String ?? module.Name.String} " +
-                $"0x{token:X8} {oldFullName} → {type.FullName} ({typeRefs.Length} TypeRefs updated)");
-
-            return CreateRenameTypeResult(
-                module, type, token, typeKind, oldName, oldFullName, typeRefs.Length, changed: true);
         }
 
         sealed class EnumMemberRenameRequest
@@ -352,11 +215,8 @@ namespace dnSpy.Extension.MCP
             }
 
             foreach (var edit in edits)
-            {
-                try { documentTreeView.FindNode(edit.Field)?.TreeNode.RefreshUI(); }
-                catch (Exception ex) { settings.Log($"rename_symbol_by_token[enum_members] UI refresh warning: {ex.Message}"); }
-            }
-            RefreshDecompiledViews(module, "rename_symbol_by_token");
+                host.RefreshTreeNode(edit.Field, "rename_symbol_by_token[enum_members]");
+            host.RefreshDecompiledViews(module, "rename_symbol_by_token[enum_members]");
 
             var changedCount = edits.Count(e => !string.Equals(e.OldName, e.NewName, StringComparison.Ordinal));
             var updatedMemberReferences = edits.Sum(e => e.MemberRefs.Count);
@@ -576,21 +436,6 @@ namespace dnSpy.Extension.MCP
                 StringComparer.OrdinalIgnoreCase.Equals(moduleRef.Name, type.Module.Name);
         }
 
-        void RefreshDecompiledViews(ModuleDef module, string operation)
-        {
-            var moduleNode = documentTreeView.FindNode(module);
-            if (moduleNode?.Document == null)
-            {
-                settings.Log($"{operation}: module document node not found; open decompiler tabs were not refreshed");
-                return;
-            }
-
-            // RefreshUI() only redraws the assembly-tree label. This public API is the
-            // invalidation path dnSpy.AsmEditor ultimately uses to rebuild decompiled tabs after
-            // its undo commands report modified document-tree objects.
-            documentTabService.RefreshModifiedDocument(moduleNode.Document);
-        }
-
         (ModuleDef module, TypeDef type) ResolveTypeByToken(uint token, string? assemblyName)
         {
             IEnumerable<ModuleDef> modules;
@@ -682,42 +527,6 @@ namespace dnSpy.Extension.MCP
                 ["old_full_name"] = oldFullName,
                 ["new_full_name"] = method.FullName,
                 ["updated_member_references"] = updatedMemberReferences,
-                ["note"] = changed
-                    ? "Renamed in dnSpy's in-memory metadata. Call save_assembly to persist the change to disk. There is no revert for renames — rename back to the old name to undo. Only references inside this module are updated; other loaded assemblies that reference the old name are NOT rewritten and will no longer bind once this one is saved."
-                    : "The requested name already matches the current metadata name; no change was made."
-            };
-            var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
-            return new CallToolResult
-            {
-                Content = new List<ToolContent> {
-                    new ToolContent { Text = json }
-                }
-            };
-        }
-
-        static CallToolResult CreateRenameTypeResult(
-            ModuleDef module,
-            TypeDef type,
-            uint token,
-            string typeKind,
-            string oldName,
-            string oldFullName,
-            int updatedTypeReferences,
-            bool changed)
-        {
-            var result = new Dictionary<string, object?>
-            {
-                ["changed"] = changed,
-                ["assembly"] = module.Assembly?.Name.String ?? module.Name.String,
-                ["module"] = module.Name.String,
-                ["token"] = token,
-                ["token_hex"] = $"0x{token:X8}",
-                ["type_kind"] = typeKind,
-                ["old_name"] = oldName,
-                ["new_name"] = type.Name.String,
-                ["old_full_name"] = oldFullName,
-                ["new_full_name"] = type.FullName,
-                ["updated_type_references"] = updatedTypeReferences,
                 ["note"] = changed
                     ? "Renamed in dnSpy's in-memory metadata. Call save_assembly to persist the change to disk. There is no revert for renames — rename back to the old name to undo. Only references inside this module are updated; other loaded assemblies that reference the old name are NOT rewritten and will no longer bind once this one is saved."
                     : "The requested name already matches the current metadata name; no change was made."
