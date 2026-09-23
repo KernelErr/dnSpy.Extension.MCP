@@ -28,6 +28,9 @@ namespace dnSpy.Extension.MCP {
 		int actualPort;
 		readonly ConcurrentDictionary<string, SseSession> sseSessions = new ConcurrentDictionary<string, SseSession>();
 		readonly ConcurrentDictionary<string, StreamableHttpSession> streamableSessions = new ConcurrentDictionary<string, StreamableHttpSession>();
+		// Streamable HTTP sessions a client explicitly ended with DELETE. The only session IDs we refuse
+		// (see TryAcceptStreamableSession); the value is unused.
+		readonly ConcurrentDictionary<string, byte> terminatedSessions = new ConcurrentDictionary<string, byte>();
 
 		/// <summary>
 		/// The port the server is actually listening on. May differ from <see cref="McpSettings.Port"/>
@@ -500,9 +503,9 @@ namespace dnSpy.Extension.MCP {
 				context.Response.Headers["Mcp-Session-Id"] = newId;
 				settings.Log($"Streamable HTTP session opened: {newId}");
 			}
-			else if (!string.IsNullOrEmpty(headerSessionId) && !streamableSessions.ContainsKey(headerSessionId!)) {
-				// If the client presents a session ID we don't recognise, reject — the client
-				// should then re-initialize. Missing header is tolerated for leniency.
+			else if (!string.IsNullOrEmpty(headerSessionId) && !TryAcceptStreamableSession(headerSessionId!)) {
+				// Only a session the client itself ended with DELETE gets here: a spec-compliant
+				// client re-initializes on 404. A missing header is tolerated for leniency.
 				context.Response.StatusCode = 404;
 				var bytes = Encoding.UTF8.GetBytes("Unknown Mcp-Session-Id");
 				context.Response.OutputStream.Write(bytes, 0, bytes.Length);
@@ -537,7 +540,7 @@ namespace dnSpy.Extension.MCP {
 		/// </summary>
 		void HandleStreamableHttpGet(HttpListenerContext context) {
 			var sessionId = context.Request.Headers["Mcp-Session-Id"];
-			if (string.IsNullOrEmpty(sessionId) || !streamableSessions.ContainsKey(sessionId!)) {
+			if (string.IsNullOrEmpty(sessionId) || !TryAcceptStreamableSession(sessionId!)) {
 				context.Response.StatusCode = 404;
 				var bytes = Encoding.UTF8.GetBytes("Unknown Mcp-Session-Id");
 				context.Response.OutputStream.Write(bytes, 0, bytes.Length);
@@ -592,11 +595,34 @@ namespace dnSpy.Extension.MCP {
 		/// </summary>
 		void HandleStreamableHttpDelete(HttpListenerContext context) {
 			var sessionId = context.Request.Headers["Mcp-Session-Id"];
-			if (!string.IsNullOrEmpty(sessionId) && streamableSessions.TryRemove(sessionId!, out _))
-				settings.Log($"Streamable HTTP session closed by DELETE: {sessionId}");
+			if (!string.IsNullOrEmpty(sessionId)) {
+				terminatedSessions[sessionId!] = 0;
+				if (streamableSessions.TryRemove(sessionId!, out _))
+					settings.Log($"Streamable HTTP session closed by DELETE: {sessionId}");
+			}
 			context.Response.StatusCode = 200;
 			context.Response.ContentLength64 = 0;
 			context.Response.Close();
+		}
+
+		/// <summary>
+		/// Decides whether a client-presented Mcp-Session-Id may be used. A session we issued is
+		/// accepted; one we never saw is adopted (registered as if we had issued it). Sessions live
+		/// only in memory, so the usual way to hold an ID we don't know is a client that kept it
+		/// across a dnSpy restart — and the official TypeScript SDK (Chatbox, among others) does not
+		/// re-initialize on the spec's 404, so every later call failed with "Unknown Mcp-Session-Id"
+		/// until the user reconnected by hand (issue #24). A session carries no state here (each POST
+		/// is answered inline), so adopting one is safe. Only a session the client explicitly ended
+		/// with DELETE is refused, which keeps the spec's 404 for real terminations.
+		/// </summary>
+		bool TryAcceptStreamableSession(string sessionId) {
+			if (streamableSessions.ContainsKey(sessionId))
+				return true;
+			if (terminatedSessions.ContainsKey(sessionId))
+				return false;
+			if (streamableSessions.TryAdd(sessionId, new StreamableHttpSession(sessionId)))
+				settings.Log($"Streamable HTTP session adopted: {sessionId} (not issued by this dnSpy process; likely a client reconnecting after a restart)");
+			return true;
 		}
 
 		/// <summary>

@@ -234,6 +234,8 @@ All three transports run on the same `HttpListener` on the same port. The server
 
 Single-endpoint transport used by codex and other modern MCP clients. The client POSTs JSON-RPC requests with `Accept: application/json, text/event-stream`; the server returns the JSON-RPC response inline as `application/json` and allocates a session on `initialize` via the `Mcp-Session-Id` response header. Subsequent POSTs must echo that header. The server also honours `GET` on the same endpoint for server-initiated SSE and `DELETE` for teardown.
 
+Sessions live in dnSpy's memory, so restarting dnSpy forgets them. A request that carries a session ID this dnSpy never issued — a client that kept its session across the restart — is adopted rather than refused, so clients keep working without reconnecting (some, like those built on the official TypeScript SDK, never re-initialize on their own). Only a session the client ended with `DELETE` gets `404`.
+
 Both `/` and `/mcp` are accepted as the endpoint path.
 
 ```bash
