@@ -239,7 +239,7 @@ cp bin/Release/net10.0-windows/dnSpy.Extension.MCP.x.dll \
   "mcpServers": {
     "dnspy": {
       "command": "C:\\Tools\\dnSpy\\dnSpy.Extension.MCP.Headless.exe",
-      "args": ["C:\\Games\\MyGame\\MyGame_Data\\Managed\\Assembly-CSharp.dll"]
+      "args": []
     }
   }
 }
@@ -259,11 +259,11 @@ command = 'C:\Tools\dnSpy\dnSpy.Extension.MCP.Headless.exe'
 args = []
 ```
 
-参数是启动时要加载的文件或文件夹（文件夹会加载其中的 `*.dll`），效果与调用 `open_files` 相同；也可以不传，让 AI 自己调用 `open_files`。其他选项：`--dnspy <文件夹>`（使用另一个 dnSpy 安装）、`--quiet`（stderr 不输出日志）、`--version`、`--help`。
+不需要任何参数。它启动时不加载任何程序集，AI 会用 `open_files` 打开需要的文件（单个文件，或一个文件夹下的全部 `*.dll`）——相当于 dnSpy 里的 文件 → 打开——所以直接告诉 AI 要分析哪个游戏或程序集即可。可选开关：`--dnspy <文件夹>`（使用另一个 dnSpy 安装）、`--quiet`（stderr 不输出日志）、`--version`、`--help`；作为参数传入的文件或文件夹路径会被预加载，效果与 `open_files` 相同。
 
 与 dnSpy 内的服务器相比：
 
-- **独立进程，独立的已加载程序集。** 它看不到 dnSpy 窗口里加载的内容，每个启动它的客户端各有一个实例。通过启动参数或 `open_files` 加载目标。
+- **独立进程，独立的已加载程序集。** 它看不到 dnSpy 窗口里加载的内容，每个启动它的客户端各有一个实例。AI 通过 `open_files` 加载目标。
 - **没有需要同步的界面。** 补丁和重命名对内存中元数据的修改与在 dnSpy 里完全一样，`save_assembly` 也照常写盘，只是没有树和标签页需要刷新。
 - **不锁定目标文件。** 程序集读入内存而不是内存映射，运行期间可以重新编译或替换它们。
 - **默认反编译设置。** 它像 `dnSpy.Console.exe` 一样获取 dnSpy 的 C# 反编译器，不带你在 GUI 里设置的选项。

@@ -239,7 +239,7 @@ The all-in-one zips also contain **`dnSpy.Extension.MCP.Headless.exe`**, next to
   "mcpServers": {
     "dnspy": {
       "command": "C:\\Tools\\dnSpy\\dnSpy.Extension.MCP.Headless.exe",
-      "args": ["C:\\Games\\MyGame\\MyGame_Data\\Managed\\Assembly-CSharp.dll"]
+      "args": []
     }
   }
 }
@@ -259,11 +259,11 @@ command = 'C:\Tools\dnSpy\dnSpy.Extension.MCP.Headless.exe'
 args = []
 ```
 
-The arguments are files or folders to load at startup (a folder loads its `*.dll`), exactly like calling `open_files` — or leave them out and let the AI call `open_files`. Other options: `--dnspy <folder>` (use a different dnSpy installation), `--quiet` (no log on stderr), `--version`, `--help`.
+No arguments are needed. It starts with nothing loaded, and the AI opens what it needs with `open_files` (a file, or a folder to load all its `*.dll`) — the same File → Open as inside dnSpy — so just tell it which game or assembly to look at. Optional switches: `--dnspy <folder>` (use a different dnSpy installation), `--quiet` (no log on stderr), `--version`, `--help`; file or folder paths passed as arguments are preloaded, as if opened with `open_files`.
 
 How it differs from the server inside dnSpy:
 
-- **Its own process and its own assemblies.** It doesn't see what's loaded in a dnSpy window, and each client that starts it gets a separate instance. Load targets through the arguments or `open_files`.
+- **Its own process and its own assemblies.** It doesn't see what's loaded in a dnSpy window, and each client that starts it gets a separate instance. The AI loads targets with `open_files`.
 - **No UI to keep in sync.** Patches and renames change the in-memory metadata exactly as inside dnSpy, and `save_assembly` writes them to disk, but there is no tree or tab to refresh.
 - **Target files aren't locked.** Assemblies are read into memory rather than memory-mapped, so you can rebuild or replace them while it runs.
 - **Default decompiler settings.** It gets dnSpy's C# decompiler the way `dnSpy.Console.exe` does, without the options you set in the GUI.
