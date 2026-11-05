@@ -217,6 +217,8 @@ namespace dnSpy.Extension.MCP
                 body.Instructions.OptimizeMacros();
 
             body.UpdateInstructionOffsets();
+            
+            host.RefreshDecompiledViews(module, "patch_method_il");
 
             var projection = SerializeBody(method, body);
             projection["edits_applied"] = resolved.Count;
@@ -282,6 +284,9 @@ namespace dnSpy.Extension.MCP
             body.UpdateInstructionOffsets();
 
             ilSnapshots.Remove(method);
+            
+            if (method.Module != null)
+                host.RefreshDecompiledViews(method.Module, "revert_method_il");
 
             var projection = SerializeBody(method, body);
             projection["reverted"] = true;
@@ -357,6 +362,9 @@ namespace dnSpy.Extension.MCP
                 body.Instructions.Add(ins);
             body.KeepOldMaxStack = false;   // let the writer recompute MaxStack on save
             body.UpdateInstructionOffsets();
+            
+            if (method.Module != null)
+                host.RefreshDecompiledViews(method.Module, nop ? "nop_method" : "force_return");
 
             var projection = SerializeBody(method, body);
             projection[nop ? "nopped" : "forced_return"] = true;
